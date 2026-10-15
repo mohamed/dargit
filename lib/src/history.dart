@@ -88,7 +88,7 @@ List<String> commitsToReplay(ObjectDatabase odb, String tip, String base) {
 String? revParse(Repository repo, String rev) {
   final r = rev.trim();
   String? id;
-  if (isObjectId(r)) {
+  if (repo.format.isId(r)) {
     id = r;
   } else {
     for (final name in [
@@ -103,7 +103,8 @@ String? revParse(Repository repo, String rev) {
       id = repo.refs.resolve(name);
       if (id != null) break;
     }
-    if (id == null && RegExp(r'^[0-9a-f]{4,39}$').hasMatch(r)) {
+    if (id == null &&
+        RegExp('^[0-9a-f]{4,${repo.format.hexLength - 1}}\$').hasMatch(r)) {
       id = repo.odb.resolvePrefix(r);
     }
   }
@@ -114,7 +115,7 @@ String? revParse(Repository repo, String rev) {
     if (o == null) return null;
     if (o.type == ObjectType.commit) return id;
     if (o.type != ObjectType.tag) return null;
-    final m = RegExp(r'^object ([0-9a-f]{40})', multiLine: true)
+    final m = RegExp(r'^object ([0-9a-f]+)$', multiLine: true)
         .firstMatch(utf8.decode(o.data, allowMalformed: true));
     id = m?.group(1);
     if (id == null) return null;

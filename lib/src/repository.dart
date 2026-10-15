@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'config.dart';
+import 'hash.dart';
 import 'ignore.dart';
 import 'index.dart';
 import 'objects.dart';
@@ -17,16 +18,28 @@ class WorkFile {
 }
 
 class Repository {
-  Repository._(this.gitDir, this.workDir)
-      : odb = ObjectDatabase(joinPath(gitDir, 'objects')),
-        refs = RefStore(gitDir);
+  Repository._(this.gitDir, this.workDir) : refs = RefStore(gitDir) {
+    final cfg = config;
+    final version =
+        int.tryParse(cfg.get('core', null, 'repositoryformatversion') ?? '0') ??
+            0;
+    final name = cfg.get('extensions', null, 'objectformat');
+    if (version > 1) {
+      throw GitError('unsupported repository format version $version');
+    }
+    format = ObjectFormat.parse(version == 0 ? null : name);
+    odb = ObjectDatabase(joinPath(gitDir, 'objects'), format);
+  }
+
+  /// The object format (`extensions.objectFormat`): SHA-1 or SHA-256.
+  late final ObjectFormat format;
 
   /// The `.git` directory (or the bare repository itself).
   final String gitDir;
 
   /// The working tree, or null for a bare repository.
   final String? workDir;
-  final ObjectDatabase odb;
+  late final ObjectDatabase odb;
   final RefStore refs;
   GitConfig? _config;
 
@@ -83,7 +96,9 @@ class Repository {
   /// HEAD pointing at the unborn [branch]. Re-initialising an existing
   /// repository leaves it unchanged.
   static Repository init(String dir,
-      {String branch = 'master', bool bare = false}) {
+      {String branch = 'master',
+      bool bare = false,
+      ObjectFormat format = ObjectFormat.sha1}) {
     final existing = tryOpen(dir);
     if (existing != null) return existing;
     final abs = Directory(dir).absolute.path;
@@ -100,15 +115,24 @@ class Repository {
     File(joinPath(gitDir, 'HEAD'))
         .writeAsStringSync('ref: refs/heads/$branch\n');
     final cfg = GitConfig.load(joinPath(gitDir, 'config'));
-    cfg.set('core', null, 'repositoryformatversion', '0');
+    // Like git: version 1 plus the extension only for non-default formats.
+    cfg.set('core', null, 'repositoryformatversion',
+        format == ObjectFormat.sha1 ? '0' : '1');
     cfg.set('core', null, 'filemode', Platform.isWindows ? 'false' : 'true');
     cfg.set('core', null, 'bare', bare ? 'true' : 'false');
     if (!bare) cfg.set('core', null, 'logallrefupdates', 'true');
+    if (format != ObjectFormat.sha1) {
+      cfg.set('extensions', null, 'objectformat', format.name);
+    }
     cfg.save();
     return Repository._(gitDir, bare ? null : abs);
   }
 
   void close() => odb.close();
+
+  GitIndex readIndex() => GitIndex.read(gitDir, format);
+
+  void writeIndex(GitIndex index) => index.write(gitDir, format);
 
   // -------------------------------------------------------------------------
   // HEAD
@@ -130,7 +154,7 @@ class Repository {
   /// Updates (or with [id] null deletes) ref [name] and appends to its
   /// reflog (and HEAD's when HEAD points at it), like `git update-ref -m`.
   void updateRef(String name, String? id, String message) {
-    final old = refs.resolve(name) ?? zeroId;
+    final old = refs.resolve(name) ?? format.zeroId;
     if (id == null) {
       refs.delete(name);
       final log = File(joinPath(gitDir, 'logs/$name'));
@@ -275,7 +299,7 @@ class Repository {
     final data = readWorkFile(f.path) ?? Uint8List(0);
     return write
         ? odb.write(ObjectType.blob, data)
-        : hashObject(ObjectType.blob, data);
+        : hashObject(ObjectType.blob, data, format);
   }
 
   /// Flat tree describing the working tree: tracked files plus untracked,
@@ -314,7 +338,7 @@ class Repository {
   /// replaces the index with [to]. Files not in either tree are untouched.
   void checkout(Map<String, TreeEntry> from, Map<String, TreeEntry> to) {
     final root = _work;
-    final old = GitIndex.read(gitDir);
+    final old = readIndex();
     for (final p in from.keys) {
       if (to.containsKey(p)) continue;
       final full = joinPath(root, p);
@@ -355,7 +379,7 @@ class Repository {
         index.entries[e.key] = indexEntryFor(e.key, e.value.id, e.value.mode);
       }
     }
-    index.write(gitDir);
+    writeIndex(index);
   }
 
   void _writeWorkFile(String path, TreeEntry e) {

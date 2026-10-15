@@ -4,6 +4,7 @@ import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'credentials.dart';
+import 'hash.dart';
 import 'history.dart' as history;
 import 'objects.dart';
 import 'rebase.dart' as rebase_;
@@ -132,13 +133,21 @@ class Git {
   // -------------------------------------------------------------------------
   // Setting up
 
-  /// `git init [--bare] [-b <initialBranch>] <dir>`.
+  /// `git init [--bare] [-b <branch>] [--object-format=<format>] <dir>`
+  /// (`--object-format=sha256` creates a SHA-256 repository).
   Future<void> init(String dir,
-          {String initialBranch = 'master', bool bare = false}) =>
+          {String initialBranch = 'master',
+          bool bare = false,
+          ObjectFormat objectFormat = ObjectFormat.sha1}) =>
       _run(
           'init',
-          () =>
-              Repository.init(dir, branch: initialBranch, bare: bare).close());
+          () => Repository.init(dir,
+                  branch: initialBranch, bare: bare, format: objectFormat)
+              .close());
+
+  /// `git rev-parse --show-object-format`: the repository's object format.
+  Future<ObjectFormat> objectFormat(String dir) =>
+      _repo('rev-parse', dir, (r) => r.format);
 
   /// Whether [dir] is the top of a Git working tree (bare repositories and
   /// subdirectories do not count).

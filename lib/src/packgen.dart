@@ -47,7 +47,7 @@ List<GitObject> objectsToSend(
     if (excluded.contains(id) || !added.add(id)) return;
     final o = odb.read(id);
     out.add(o);
-    for (final e in parseTree(o.data)) {
+    for (final e in parseTree(o.data, odb.format)) {
       if (e.mode == modeGitlink) continue;
       if (e.isTree) {
         addTree(e.id);

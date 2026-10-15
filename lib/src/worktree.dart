@@ -92,7 +92,7 @@ Map<String, TreeEntry> _indexTree(GitIndex index) => {
 /// listed; renames are reported as a deletion plus an addition).
 List<StatusEntry> status(Repository repo) {
   final head = repo.treeOfCommit(repo.headCommit);
-  final index = GitIndex.read(repo.gitDir);
+  final index = repo.readIndex();
   final staged = _indexTree(index);
   final work = repo.worktreeTree(index, head, write: false);
   final unmerged = {for (final c in index.conflicts) c.path};
@@ -139,9 +139,9 @@ List<StatusEntry> status(Repository repo) {
 /// files are skipped.
 void add(Repository repo, List<String> pathspecs) {
   final head = repo.treeOfCommit(repo.headCommit);
-  final index = GitIndex.read(repo.gitDir);
+  final index = repo.readIndex();
   _stage(repo, index, head, pathspecs.map(normalizePath).toSet());
-  index.write(repo.gitDir);
+  repo.writeIndex(index);
 }
 
 /// Updates [index] below [specs] from the working tree, writing blobs.
@@ -177,7 +177,7 @@ String? commit(Repository repo, String message,
     {List<String>? only, required Signature author}) {
   final head = repo.headCommit;
   final headTree = repo.treeOfCommit(head);
-  final index = GitIndex.read(repo.gitDir);
+  final index = repo.readIndex();
   final Map<String, TreeEntry> tree;
   if (only == null) {
     if (index.conflicts.isNotEmpty) {
@@ -195,7 +195,7 @@ String? commit(Repository repo, String message,
         if (specs.any((s) => underPathspec(e.path, s)))
           e.path: TreeEntry(e.modeString, e.path, e.id),
     };
-    index.write(repo.gitDir);
+    repo.writeIndex(index);
   }
   if (_sameTree(tree, headTree)) return null;
   var msg = message;
@@ -219,7 +219,7 @@ String? commit(Repository repo, String message,
 /// changes to tracked files. Untracked files are left alone.
 void resetHard(Repository repo, String target, {String? reflogMessage}) {
   final head = repo.treeOfCommit(repo.headCommit);
-  final index = GitIndex.read(repo.gitDir);
+  final index = repo.readIndex();
   // What is on disk now for every tracked path.
   final current =
       repo.worktreeTree(index, head, write: false, includeUntracked: false);

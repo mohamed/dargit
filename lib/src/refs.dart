@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'util.dart';
+import 'hash.dart';
 
 /// Loose refs, packed-refs and symbolic refs (HEAD).
 class RefStore {
@@ -20,7 +21,9 @@ class RefStore {
         continue;
       }
       final sp = line.indexOf(' ');
-      if (sp == 40) out[line.substring(41)] = line.substring(0, 40);
+      if (sp > 0 && isObjectId(line.substring(0, sp))) {
+        out[line.substring(sp + 1)] = line.substring(0, sp);
+      }
     }
     return out;
   }

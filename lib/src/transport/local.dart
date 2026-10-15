@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import '../hash.dart';
 import '../history.dart';
 import '../objects.dart';
 import '../pack.dart';
@@ -44,6 +45,9 @@ class _LocalUpload implements UploadSession {
   final Map<String, String> refs;
 
   @override
+  ObjectFormat get format => _repo.format;
+
+  @override
   String? get head => _repo.refs.symbolicTarget('HEAD');
 
   @override
@@ -51,7 +55,7 @@ class _LocalUpload implements UploadSession {
     for (final w in wants) {
       if (!_repo.odb.has(w)) throw GitError('remote error: not our ref $w');
     }
-    return buildPack(objectsToSend(_repo.odb, wants, haves));
+    return buildPack(objectsToSend(_repo.odb, wants, haves), _repo.format);
   }
 
   @override
@@ -66,16 +70,21 @@ class _LocalReceive implements ReceiveSession {
   final Map<String, String> refs;
 
   @override
+  ObjectFormat get format => _repo.format;
+
+  @override
   Future<void> push(List<RefUpdate> updates, Uint8List? pack) async {
-    if (pack != null && pack.length > 32) storePack(_repo.odb, pack);
+    if (pack != null && pack.length >= 12 && readUint32(pack, 8) > 0) {
+      storePack(_repo.odb, pack);
+    }
     final errors = <String>[];
     for (final u in updates) {
-      final current = _repo.refs.resolve(u.name) ?? zeroId;
+      final current = _repo.refs.resolve(u.name) ?? _repo.format.zeroId;
       if (current != u.oldId) {
         errors.add('${u.name} stale info');
         continue;
       }
-      if (u.newId != zeroId) {
+      if (!isZeroId(u.newId)) {
         if (!_repo.odb.has(u.newId)) {
           errors.add('${u.name} missing object');
           continue;
@@ -91,7 +100,7 @@ class _LocalReceive implements ReceiveSession {
       throw GitError('push rejected: ${errors.join('; ')}');
     }
     for (final u in updates) {
-      if (u.newId == zeroId) {
+      if (isZeroId(u.newId)) {
         _repo.refs.delete(u.name);
       } else {
         _repo.refs.update(u.name, u.newId);

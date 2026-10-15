@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'pack.dart';
 import 'util.dart';
+import 'hash.dart';
 
 enum ObjectType {
   commit(1, 'commit'),
@@ -47,8 +48,8 @@ Uint8List objectBytes(ObjectType type, List<int> data) {
   return b.takeBytes();
 }
 
-String hashObject(ObjectType type, List<int> data) =>
-    sha1Hex(objectBytes(type, data));
+String hashObject(ObjectType type, List<int> data, ObjectFormat format) =>
+    format.hashHex(objectBytes(type, data));
 
 // ---------------------------------------------------------------------------
 // Trees
@@ -67,20 +68,21 @@ class TreeEntry {
   bool get isTree => mode == modeTree;
 }
 
-List<TreeEntry> parseTree(Uint8List data) {
+List<TreeEntry> parseTree(Uint8List data, ObjectFormat format) {
+  final n = format.size;
   final out = <TreeEntry>[];
   var i = 0;
   while (i < data.length) {
     final sp = data.indexOf(0x20, i);
     final nul = data.indexOf(0, sp);
-    if (sp < 0 || nul < 0 || nul + 21 > data.length) {
+    if (sp < 0 || nul < 0 || nul + 1 + n > data.length) {
       throw GitError('corrupt tree object');
     }
     final mode = ascii.decode(data.sublist(i, sp));
     final name = utf8.decode(data.sublist(sp + 1, nul), allowMalformed: true);
-    final id = toHex(data.sublist(nul + 1, nul + 21));
+    final id = toHex(data.sublist(nul + 1, nul + 1 + n));
     out.add(TreeEntry(mode == '040000' ? modeTree : mode, name, id));
-    i = nul + 21;
+    i = nul + 1 + n;
   }
   return out;
 }
@@ -229,7 +231,10 @@ class Commit {
 // Object database
 
 class ObjectDatabase {
-  ObjectDatabase(this.objectsDir);
+  ObjectDatabase(this.objectsDir, [this.format = ObjectFormat.sha1]);
+
+  /// The repository's object format.
+  final ObjectFormat format;
 
   final String objectsDir;
   List<PackFile>? _packs;
@@ -282,9 +287,10 @@ class ObjectDatabase {
     final dir = Directory(joinPath(objectsDir, prefix.substring(0, 2)));
     if (dir.existsSync()) {
       for (final f in dir.listSync()) {
-        final name = f.path.substring(f.path.length - 38);
+        final name =
+            f.path.substring(f.path.lastIndexOf(Platform.pathSeparator) + 1);
         final id = '${prefix.substring(0, 2)}$name';
-        if (isObjectId(id) && id.startsWith(prefix)) found.add(id);
+        if (format.isId(id) && id.startsWith(prefix)) found.add(id);
       }
     }
     for (final p in packs) {
@@ -332,7 +338,7 @@ class ObjectDatabase {
 
   String write(ObjectType type, List<int> data) {
     final raw = objectBytes(type, data);
-    final id = sha1Hex(raw);
+    final id = format.hashHex(raw);
     if (!has(id)) {
       final path = _loosePath(id);
       final f = File(path);
@@ -351,7 +357,7 @@ class ObjectDatabase {
   List<TreeEntry> readTree(String id) {
     final o = read(id);
     if (o.type != ObjectType.tree) throw GitError('$id is not a tree');
-    return parseTree(o.data);
+    return parseTree(o.data, format);
   }
 
   /// Flattens a tree into `path -> (mode, id)` for all blobs/links/gitlinks.
