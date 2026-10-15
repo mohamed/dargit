@@ -16,7 +16,7 @@ import 'package:dartssh2/dartssh2.dart'
         SSHSignature,
         SSHSocket;
 
-import '../backend.dart' show AuthMethod;
+import '../credentials.dart';
 import '../util.dart';
 import 'transport.dart';
 
@@ -53,9 +53,11 @@ class SshTransport implements Transport {
         } on SocketException catch (e) {
           throw GitError('cannot connect to $host:$port: ${e.message}');
         }
-        final auth = options.auth;
-        final username =
-            user ?? ((auth.username ?? '').isEmpty ? 'git' : auth.username!);
+        // Like ssh: the URL's user, else the local user name.
+        final username = user ??
+            Platform.environment['USER'] ??
+            Platform.environment['USERNAME'] ??
+            'git';
         String? hostKeyError;
         final client = SSHClient(
           socket,
@@ -94,65 +96,36 @@ class SshTransport implements Transport {
         }
       }, options.timeout);
 
-  /// Returns null when the key is accepted, else an error message.
+  /// Returns null when the key is accepted, else an error message
+  /// (OpenSSH's wording).
   String? _verifyHostKey(String fingerprint) {
-    final path = options.knownHostsPath;
-    if (path == null) return null;
-    final f = File(path);
-    Map<String, dynamic> known = {};
-    if (f.existsSync()) {
-      try {
-        final decoded = jsonDecode(f.readAsStringSync());
-        if (decoded is Map<String, dynamic>) known = decoded;
-      } on FormatException {
-        return 'known hosts file $path is corrupt';
-      }
-    }
-    final pinned = known[hostKeyName];
-    if (pinned == null) {
-      known[hostKeyName] = fingerprint;
-      f.parent.createSync(recursive: true);
-      writeFileAtomic(
-          path, utf8Bytes(const JsonEncoder.withIndent('  ').convert(known)));
-      return null;
-    }
-    if (pinned == fingerprint) return null;
-    return 'host key for $hostKeyName changed (expected $pinned, got $fingerprint); '
-        'refusing to connect';
+    final verify = options.verifyHostKey;
+    if (verify != null && verify(hostKeyName, fingerprint)) return null;
+    return 'Host key verification failed for $hostKeyName ($fingerprint)';
   }
 
   Future<_Identities> _identities() async {
-    final auth = options.auth;
-    switch (auth.method) {
-      case AuthMethod.sshKey:
-        final path = auth.sshKeyPath;
-        if (path == null || path.isEmpty) {
-          throw GitError('no SSH key configured');
-        }
+    switch (options.credentials) {
+      case SshKey(:final path, :final passphrase):
         final f = File(path);
         if (!f.existsSync()) throw GitError('SSH key $path not found');
         final pem = f.readAsStringSync();
-        final passphrase =
-            (auth.sshPassphrase ?? '').isEmpty ? null : auth.sshPassphrase;
+        final pass = (passphrase ?? '').isEmpty ? null : passphrase;
         try {
-          if (passphrase == null && SSHKeyPair.isEncryptedPem(pem)) {
+          if (pass == null && SSHKeyPair.isEncryptedPem(pem)) {
             throw GitError(
                 'SSH key $path is encrypted; a passphrase is required');
           }
-          // The public key is derived from the private key; no .pub needed.
-          return _Identities(SSHKeyPair.fromPem(pem, passphrase), null);
+          return _Identities(SSHKeyPair.fromPem(pem, pass), null);
         } on GitError {
           rethrow;
         } on Object catch (e) {
           throw GitError('cannot load SSH key $path: $e');
         }
-      case AuthMethod.sshAgent:
-        final sock = (auth.sshKeyPath ?? '').isNotEmpty
-            ? auth.sshKeyPath
-            : Platform.environment['SSH_AUTH_SOCK'];
-        return _Identities.fromAgent(sock);
-      case AuthMethod.none:
-      case AuthMethod.httpsToken:
+      case SshAgent(:final socketPath):
+        return _Identities.fromAgent(
+            socketPath ?? Platform.environment['SSH_AUTH_SOCK']);
+      case NoCredentials() || UserPassword():
         return _Identities(const [], null);
     }
   }

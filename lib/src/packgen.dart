@@ -1,7 +1,7 @@
 import 'dart:collection';
 
 import 'objects.dart';
-import 'local_ops.dart';
+import 'history.dart';
 
 /// Objects needed by a peer that wants [wants] and already has [haves]
 /// (and everything reachable from them). Unknown haves are ignored.

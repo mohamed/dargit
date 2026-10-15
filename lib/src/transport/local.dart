@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 
-import '../local_ops.dart';
+import '../history.dart';
 import '../objects.dart';
 import '../pack.dart';
 import '../packgen.dart';

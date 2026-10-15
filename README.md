@@ -9,97 +9,97 @@ It implements what a Markdown-notes app needs and nothing more. Repositories
 it writes are ordinary Git repositories: the Git CLI can read them, and
 `git fsck --strict` and `git status` stay clean.
 
-## Scope
+## Principles
 
-- **Repositories**: `init` (initial branch name), detection, `.git` file
-  indirection, bare repositories as remotes.
-- **Objects**: loose objects (zlib), packfiles with `.idx` v2, OFS_DELTA and
-  REF_DELTA, SHA-1.
-- **Refs**: loose refs, `packed-refs`, symbolic `HEAD` (including unborn
-  branches), remote-tracking refs `refs/remotes/origin/<branch>`.
-- **Index**: v2/v3 read, v2 write.
-- **Commit**: everything (`git add -A` semantics, honouring `.gitignore`) or
-  only given paths, leaving other staged changes untouched.
-- **Status**: clean flag plus the number of unpushed commits; ahead/behind.
-- **History**: `fileHistory` follows renames along first parents (like
-  `git log --follow --first-parent`), `showFile` reads a file at a commit.
-- **Remotes**: clone, fetch (with prune), push (fast-forward, or
-  force-with-lease), `sync` (fast-forward / push / rebase local commits with
-  a line-based 3-way merge), conflict detection with no side effects, and
-  `resolve` (keep remote, force-push local, abort).
-- **Transports** (smart protocol v0): local paths and `file://`, HTTP(S)
-  with a token as Basic auth, SSH via [`dartssh2`](https://pub.dev/packages/dartssh2)
-  (private key file with optional passphrase, SSH agent on desktop,
-  `user@host:path` and `ssh://` URLs, host keys pinned on first use).
-- Every operation runs in a background isolate, and network operations fail
-  with a clear `GitException` after an idle timeout (2 minutes by default).
+- **Same commands as git.** Every method of `Git` is a git command with
+  the same meaning: `init`, `clone`, `remote add/set-url/remove/get-url`,
+  `status --porcelain`, `add -A`, `commit [--only]`, `reset --hard`,
+  `rebase`, `rev-parse`, `rev-list --count`, `log --first-parent
+  [--follow]`, `show rev:path`, `fetch [--prune]`, `push
+  [--force-with-lease]`.
+- **100% compatible with git.** Objects, packs, index, refs, packed-refs,
+  reflogs and config are read and written in git's own formats; tests check
+  the results with `git fsck --strict`, `git status`, `git log --follow`
+  and `git reflog`, and run every remote scenario through the real
+  `git upload-pack`/`receive-pack` and `git http-backend`.
+- **No application policy.** What to commit, when to sync, how to resolve
+  conflicts and which SSH host keys to trust belong to the app (GitMarker's
+  `sync` is built from `status`, `fetch`, `rev-list`, `reset --hard`,
+  `rebase` and `push`).
+
+## Commands
+
+| `Git` method | git command |
+| --- | --- |
+| `init(dir, initialBranch:, bare:)` | `git init [-b <branch>] [--bare]` |
+| `isRepository(dir)` | is `dir` the top of a work tree |
+| `clone(url, dir, branch:)` | `git clone [-b <branch>] <url> <dir>` |
+| `remoteGetUrl` / `remoteAdd` / `remoteSetUrl` / `remoteRemove` | `git remote get-url / add / set-url / remove` |
+| `status(dir)` | `git status --porcelain --untracked-files=all` |
+| `add(dir, pathspecs)` | `git add -A -- <pathspecs>` |
+| `commit(dir, msg)` | `git commit -m <msg>` |
+| `commit(dir, msg, only: paths)` | `git commit --only -m <msg> -- <paths>` (new files included) |
+| `resetHard(dir, rev)` | `git reset --hard <rev>` |
+| `rebase(dir, upstream)` | `git rebase <upstream>`, then `git rebase --abort` on conflict |
+| `revParse(dir, rev)` | `git rev-parse --verify --quiet <rev>^{commit}` |
+| `revListCount(dir, rev, exclude:)` | `git rev-list --count <rev> ^<exclude>` |
+| `log(dir, rev:, path:, follow:)` | `git log --first-parent [--follow] [<rev>] [-- <path>]` |
+| `show(dir, rev, path)` | `git show <rev>:<path>` (bytes) |
+| `fetch(dir, remote:, prune:)` | `git fetch [--prune] <remote>` |
+| `push(dir, branch, forceWithLease:)` | `git push [--force-with-lease] <remote> <branch>` |
+
+Objects: loose objects, packfiles with `.idx` v2 and OFS/REF deltas,
+SHA-1. Refs: loose, `packed-refs`, symbolic `HEAD` (unborn branches),
+reflogs. Index v2/v3 read, v2 written. `.gitignore` and
+`.git/info/exclude` are honoured. Transports (smart protocol v0): local
+paths and `file://`, HTTP(S), SSH via [`dartssh2`](https://pub.dev/packages/dartssh2).
+Every command runs in a background isolate; network operations fail with a
+`GitException` after an idle timeout (2 minutes by default).
 
 ## Non-goals
 
-SHA-256 repositories, submodules, LFS, merges other than rebasing local
-commits, tags, hooks, reflogs, CRLF conversion, sparse checkout, shallow
-clones, protocol v2 and the dumb HTTP protocol. See [STATUS.md](STATUS.md)
-for the design decisions and known limitations.
+SHA-256 repositories, submodules, LFS, merges (only rebase), tags, hooks,
+CRLF conversion, sparse checkout, shallow clones, protocol v2, the dumb
+HTTP protocol, and reading global/system git config. See
+[STATUS.md](STATUS.md) for the design decisions and known differences.
 
 ## Usage
 
 ```dart
 import 'package:dartgit/dartgit.dart';
 
-Future<void> main() async {
-  final git = GitBackend(
-    auth: GitAuth(method: AuthMethod.httpsToken, password: 'ghp_...'),
-    authorName: 'Ada',
-    authorEmail: 'ada@example.com',
-    knownHostsPath: '/path/to/known_hosts.json', // used for SSH
-    networkTimeout: const Duration(minutes: 2),
-  );
+final git = Git(
+  credentials: const UserPassword('oauth2', 'glpat-...'), // or SshKey(...)
+  verifyHostKey: myKnownHosts, // (host, 'SHA256:...') => bool, for SSH
+  authorName: 'Ada',
+  authorEmail: 'ada@example.com',
+);
 
-  const dir = '/path/to/notes';
-  if (!await git.isRepository(dir)) {
-    await git.clone('https://github.com/me/notes.git', dir, branch: 'main');
-  }
+await git.clone('https://gitlab.com/me/notes.git', dir, branch: 'main');
+// ... edit today.md ...
+await git.commit(dir, 'Edit today.md', only: ['today.md']);
 
-  // ... edit files ...
-  await git.commit(dir, 'Edit today.md', paths: ['today.md']);
-  await git.commit(dir, 'Save everything'); // returns false if nothing changed
+// A "sync": fetch, then fast-forward, push, or rebase and push.
+await git.fetch(dir, prune: true);
+final ahead = await git.revListCount(dir, 'main', exclude: 'origin/main');
+final behind = await git.revListCount(dir, 'origin/main', exclude: 'main');
+if (ahead == 0 && behind > 0) await git.resetHard(dir, 'origin/main');
+if (ahead > 0 && behind > 0) {
+  final r = await git.rebase(dir, 'origin/main');
+  if (!r.ok) print('conflicts: ${r.conflicts}');
+}
+if (ahead > 0) await git.push(dir, 'main');
 
-  final st = await git.status(dir, 'main'); // (clean: true, unpushed: 2)
-
-  final result = await git.sync(dir, 'main');
-  switch (result.outcome) {
-    case SyncOutcome.conflict:
-      print('Conflicting files: ${result.conflictedFiles}');
-      await git.resolve(dir, 'main', ConflictResolution.keepRemote);
-    case SyncOutcome.dirtyTree:
-      print('Commit first: ${result.conflictedFiles}');
-    default:
-      print(result.outcome);
-  }
-
-  for (final rev in await git.fileHistory(dir, 'today.md')) {
-    print('${rev.date} ${rev.author} ${rev.message} (${rev.path})');
-    final text = await git.showFile(dir, rev.commit, rev.path);
-  }
+for (final e in await git.log(dir, path: 'today.md', follow: true)) {
+  print('${e.date} ${e.authorName} ${e.subject} (${e.path})');
 }
 ```
 
-SSH with a key file (the public key is derived from the private key, no
-`.pub` file is needed):
-
-```dart
-GitBackend(
-  auth: GitAuth(
-    method: AuthMethod.sshKey,
-    sshKeyPath: '/path/to/id_ed25519',
-    sshPassphrase: 'optional',
-  ),
-  knownHostsPath: '/path/to/known_hosts.json', // {"host": "SHA256:..."}
-);
-```
-
-`AuthMethod.sshAgent` uses `SSH_AUTH_SOCK` (or the socket path given as
-`sshKeyPath`) on Linux and macOS.
+SSH: `SshKey(path, passphrase:)` reads OpenSSH or PEM private keys (no
+`.pub` needed); `SshAgent()` uses `SSH_AUTH_SOCK` on Linux and macOS. The
+user comes from the URL (`git@host:path`, `ssh://user@host/path`). Without
+a `verifyHostKey` callback SSH connections fail like `ssh` with an unknown
+host.
 
 ## Development
 

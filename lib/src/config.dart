@@ -123,5 +123,16 @@ class GitConfig {
     _lines.insert(sectionEnd, '\t$key = ${_quote(value)}');
   }
 
+  /// Removes `[section "sub"]` and its keys (like `git config --remove-section`).
+  void removeSection(String section, String? sub) {
+    final want = _sectionKey(section, sub);
+    var inside = false;
+    _lines.removeWhere((line) {
+      final s = _parseSection(line);
+      if (s != null) inside = s == want;
+      return inside;
+    });
+  }
+
   void save() => writeFileAtomic(path, utf8Bytes('${_lines.join('\n')}\n'));
 }

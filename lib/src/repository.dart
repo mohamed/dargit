@@ -8,10 +8,6 @@ import 'objects.dart';
 import 'refs.dart';
 import 'util.dart';
 
-/// Directory whose untracked files never make the tree dirty and are never
-/// added automatically (GitMarker keeps local state there).
-const appStateDir = '.gitmarker';
-
 /// A file found in the working tree.
 class WorkFile {
   WorkFile(this.path, this.mode, this.stat);
@@ -83,10 +79,11 @@ class Repository {
     return r;
   }
 
-  /// Creates a repository in [dir] with HEAD pointing at the unborn
-  /// [branch]. Re-initialising an existing repository is a no-op.
+  /// `git init [--bare] [-b <branch>]`: creates a repository in [dir] with
+  /// HEAD pointing at the unborn [branch]. Re-initialising an existing
+  /// repository leaves it unchanged.
   static Repository init(String dir,
-      {required String branch, bool bare = false}) {
+      {String branch = 'master', bool bare = false}) {
     final existing = tryOpen(dir);
     if (existing != null) return existing;
     final abs = Directory(dir).absolute.path;
@@ -121,6 +118,42 @@ class Repository {
 
   /// Commit id of HEAD, null if the branch is unborn.
   String? get headCommit => refs.resolve('HEAD');
+
+  /// Identity recorded in reflog entries.
+  Signature? identity;
+
+  bool get _logRefUpdates {
+    final v = config.get('core', null, 'logallrefupdates');
+    return v == null ? !isBare : v == 'true' || v == 'always';
+  }
+
+  /// Updates (or with [id] null deletes) ref [name] and appends to its
+  /// reflog (and HEAD's when HEAD points at it), like `git update-ref -m`.
+  void updateRef(String name, String? id, String message) {
+    final old = refs.resolve(name) ?? zeroId;
+    if (id == null) {
+      refs.delete(name);
+      final log = File(joinPath(gitDir, 'logs/$name'));
+      if (log.existsSync()) log.deleteSync();
+      return;
+    }
+    refs.update(name, id);
+    final who = identity;
+    if (!_logRefUpdates || who == null) return;
+    final line = '$old $id ${who.format()}\t$message\n';
+    final targets = [
+      if (name.startsWith('refs/heads/') ||
+          name.startsWith('refs/remotes/') ||
+          name == 'HEAD')
+        name,
+      if (name != 'HEAD' && headRef == name) 'HEAD',
+    ];
+    for (final t in targets) {
+      final f = File(joinPath(gitDir, 'logs/$t'));
+      f.parent.createSync(recursive: true);
+      f.writeAsStringSync(line, mode: FileMode.append);
+    }
+  }
 
   Map<String, TreeEntry> treeOfCommit(String? commit) =>
       commit == null ? {} : odb.flattenTree(odb.readCommit(commit).tree);
@@ -246,7 +279,7 @@ class Repository {
   }
 
   /// Flat tree describing the working tree: tracked files plus untracked,
-  /// non-ignored files outside [appStateDir].
+  /// non-ignored files.
   Map<String, TreeEntry> worktreeTree(
     GitIndex index,
     Map<String, TreeEntry> head, {
@@ -260,7 +293,6 @@ class Repository {
       final isTracked = tracked.contains(f.path);
       if (!isTracked) {
         if (!includeUntracked) continue;
-        if (f.path.startsWith('$appStateDir/')) continue;
       }
       final known = index.entries[f.path]?.modeString ?? head[f.path]?.mode;
       final mode = modeFor(f, known);

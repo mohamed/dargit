@@ -87,8 +87,7 @@ void main() {
   ];
 
   test('SSH URL parsing', () {
-    final o =
-        TransportOptions(auth: GitAuth(), timeout: const Duration(seconds: 1));
+    final o = TransportOptions(timeout: const Duration(seconds: 1));
     final scp = openTransport('git@github.com:me/notes.git', o) as SshTransport;
     expect([scp.user, scp.host, scp.port, scp.path],
         ['git', 'github.com', 22, 'me/notes.git']);
@@ -150,31 +149,34 @@ void main() {
     });
 
     String url() => 'ssh://$_user@127.0.0.1:${port()}$remote';
-    GitBackend keyBackend(String key, {String? pass}) => GitBackend(
-          auth: GitAuth(
-              method: AuthMethod.sshKey,
-              sshKeyPath: '$keys/$key',
-              sshPassphrase: pass),
-          knownHostsPath: known,
+    Git keyGit(String key, {String? pass}) => Git(
+          credentials: SshKey('$keys/$key', passphrase: pass),
+          verifyHostKey: pinTo(known),
           authorName: key,
           authorEmail: '$key@x',
         );
 
+    Future<void> commitAll(Git g, String dir, String m) async {
+      await g.add(dir, ['.']);
+      await g.commit(dir, m);
+    }
+
     test('clone, push, rebase with key files; host key pinned', () async {
-      final ed = keyBackend('id_ed25519', pass: passphrase),
-          rsa = keyBackend('id_rsa');
+      final ed = keyGit('id_ed25519', pass: passphrase), rsa = keyGit('id_rsa');
       final a = '${tempDir()}/a', b = '${tempDir()}/b';
       await ed.clone(url(), a, branch: 'main');
       writeFile(a, 'n.md', '1\n2\n3\n');
-      await ed.commit(a, 'one');
-      expect((await ed.sync(a, 'main')).outcome, SyncOutcome.pushed);
+      await commitAll(ed, a, 'one');
+      await ed.push(a, 'main');
       await rsa.clone(url(), b, branch: 'main');
       writeFile(a, 'n.md', '1a\n2\n3\n');
-      await ed.commit(a, 'a');
-      await ed.sync(a, 'main');
+      await commitAll(ed, a, 'a');
+      await ed.push(a, 'main');
       writeFile(b, 'n.md', '1\n2\n3b\n');
-      await rsa.commit(b, 'b');
-      expect((await rsa.sync(b, 'main')).outcome, SyncOutcome.rebased);
+      await commitAll(rsa, b, 'b');
+      await rsa.fetch(b);
+      expect((await rsa.rebase(b, 'origin/main')).ok, isTrue);
+      await rsa.push(b, 'main');
       expect(readFile(b, 'n.md'), '1a\n2\n3b\n');
       git(['fsck', '--strict', '--no-dangling'], cwd: remote);
 
@@ -185,20 +187,18 @@ void main() {
       File(known).writeAsStringSync(
           jsonEncode({'[127.0.0.1]:${port()}': 'SHA256:other'}));
       await expectLater(
-          ed.sync(a, 'main'),
-          throwsA(isA<GitException>()
-              .having((e) => e.message, 'message', contains('changed'))));
+          ed.fetch(a),
+          throwsA(isA<GitException>().having((e) => e.message, 'message',
+              contains('Host key verification failed'))));
     });
 
     test('authentication errors are reported', () async {
       await expectLater(
-          keyBackend('id_ed25519')
-              .clone(url(), '${tempDir()}/x', branch: 'main'),
+          keyGit('id_ed25519').clone(url(), '${tempDir()}/x'),
           throwsA(isA<GitException>()
               .having((e) => e.message, 'message', contains('passphrase'))));
       await expectLater(
-          GitBackend(knownHostsPath: known)
-              .clone(url(), '${tempDir()}/y', branch: 'main'),
+          Git(verifyHostKey: pinTo(known)).clone(url(), '${tempDir()}/y'),
           throwsA(isA<GitException>().having(
               (e) => e.message, 'message', contains('authentication'))));
     });
@@ -209,12 +209,24 @@ void main() {
       final sock = '${Directory.systemTemp.createTempSync('dga').path}/agent';
       final agent = await TestAgent.start(sock, pair);
       addTearDown(agent.close);
-      final g = GitBackend(
-          auth: GitAuth(method: AuthMethod.sshAgent, sshKeyPath: sock),
-          knownHostsPath: known);
+      final g = Git(
+          credentials: SshAgent(socketPath: sock), verifyHostKey: pinTo(known));
       final dir = '${tempDir()}/c';
       await g.clone(url(), dir, branch: 'main');
       expect(await g.isRepository(dir), isTrue);
     });
   });
 }
+
+/// Trust on first use, pinned in a JSON file `{host: fingerprint}`.
+/// Top-level so the closure only captures [file] (it is sent to isolates).
+HostKeyVerifier pinTo(String file) => (host, fingerprint) {
+      final f = File(file);
+      final known = f.existsSync()
+          ? jsonDecode(f.readAsStringSync()) as Map<String, dynamic>
+          : <String, dynamic>{};
+      final pinned = known[host];
+      if (pinned != null) return pinned == fingerprint;
+      f.writeAsStringSync(jsonEncode({...known, host: fingerprint}));
+      return true;
+    };

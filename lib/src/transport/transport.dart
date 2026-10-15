@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import '../backend.dart' show GitAuth;
+import '../credentials.dart';
 import '../util.dart';
 import 'http.dart';
 import 'local.dart';
@@ -49,9 +49,11 @@ abstract class Transport {
 
 class TransportOptions {
   TransportOptions(
-      {required this.auth, this.knownHostsPath, required this.timeout});
-  final GitAuth auth;
-  final String? knownHostsPath;
+      {this.credentials = const NoCredentials(),
+      this.verifyHostKey,
+      required this.timeout});
+  final Credentials credentials;
+  final HostKeyVerifier? verifyHostKey;
   final Duration timeout;
 }
 

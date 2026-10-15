@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import '../backend.dart' show AuthMethod;
+import '../credentials.dart';
 import '../util.dart';
 import 'pktline.dart';
 import 'transport.dart';
@@ -26,10 +26,9 @@ class HttpTransport implements Transport {
 class _HttpChannel implements SmartChannel {
   _HttpChannel(String url, this.options) {
     var u = Uri.parse(url);
-    final auth = options.auth;
-    if (auth.method == AuthMethod.httpsToken) {
-      final user = (auth.username ?? '').isEmpty ? 'git' : auth.username!;
-      _authHeader = _basic(user, auth.password ?? '');
+    final creds = options.credentials;
+    if (creds is UserPassword) {
+      _authHeader = _basic(creds.username, creds.password);
     } else if (u.userInfo.isNotEmpty) {
       final parts = u.userInfo.split(':');
       _authHeader = _basic(
