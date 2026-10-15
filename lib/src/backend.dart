@@ -250,8 +250,9 @@ class GitBackend {
                   message: 'aborted; nothing changed');
             case ConflictResolution.keepRemote:
               final url = repo.config.get('remote', 'origin', 'url');
-              if (url == null || url.isEmpty)
+              if (url == null || url.isEmpty) {
                 return SyncResult(SyncOutcome.noRemote);
+              }
               if (!isClean(repo)) {
                 return SyncResult(SyncOutcome.dirtyTree,
                     message: 'uncommitted changes',
@@ -259,15 +260,17 @@ class GitBackend {
               }
               await fetchOrigin(repo, _transport(url));
               final remote = repo.refs.resolve('refs/remotes/origin/$branch');
-              if (remote == null)
+              if (remote == null) {
                 throw GitError("remote has no branch '$branch'");
+              }
               moveBranch(repo, branch, remote);
               return SyncResult(SyncOutcome.fastForwarded,
                   message: 'local commits discarded; reset to remote');
             case ConflictResolution.forcePushLocal:
               final url = repo.config.get('remote', 'origin', 'url');
-              if (url == null || url.isEmpty)
+              if (url == null || url.isEmpty) {
                 return SyncResult(SyncOutcome.noRemote);
+              }
               final lease = repo.refs.resolve('refs/remotes/origin/$branch');
               await pushBranch(repo, _transport(url), branch,
                   force: true, lease: lease);

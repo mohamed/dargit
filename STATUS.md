@@ -6,7 +6,7 @@
 - [x] 2. History (`fileHistory` with rename following, `showFile`)
 - [x] 3. Local transport (path / `file://`): clone, fetch (+prune), push
 - [x] 4. `sync` / rebase / conflict / `resolve`
-- [ ] 5. HTTPS smart transport
+- [x] 5. HTTPS smart transport
 - [ ] 6. SSH transport (dartssh2)
 
 ## Design decisions
@@ -54,3 +54,8 @@
   fetches and hard-resets the branch to origin (refuses a dirty tree,
   returns `fastForwarded`), `resolve(forcePushLocal)` returns `pushed`.
 - Network timeout is an idle timeout on every connect/read (default 2 min).
+- HTTP(S): `dart:io` `HttpClient` (no extra dependency), proxy taken from
+  the environment, token sent as Basic auth with user `git` when the
+  username is empty; `user:token@` in the URL also works. Tests run against
+  `git http-backend` behind a local CGI bridge; a public-repository clone is
+  tagged `network` (skipped by default).

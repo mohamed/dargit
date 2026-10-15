@@ -59,9 +59,13 @@ class _HttpChannel implements SmartChannel {
   static String _basic(String user, String pass) =>
       'Basic ${base64.encode(utf8.encode('$user:$pass'))}';
 
-  Future<HttpClientResponse> _send(HttpClientRequest req) async {
-    if (_authHeader != null)
+  void _authorize(HttpClientRequest req) {
+    if (_authHeader != null) {
       req.headers.set(HttpHeaders.authorizationHeader, _authHeader!);
+    }
+  }
+
+  Future<HttpClientResponse> _send(HttpClientRequest req) async {
     final resp = await req.close().timeout(options.timeout);
     if (resp.statusCode == 401 || resp.statusCode == 403) {
       await resp.drain<void>().catchError((_) {});
@@ -87,6 +91,7 @@ class _HttpChannel implements SmartChannel {
   Future<PktReader> advertise(String service) async {
     final Uri uri = Uri.parse('$_base/info/refs?service=$service');
     final req = await _client.getUrl(uri).timeout(options.timeout);
+    _authorize(req);
     final resp = await _send(req);
     if (resp.redirects.isNotEmpty) {
       final loc = resp.redirects.last.location;
@@ -102,8 +107,9 @@ class _HttpChannel implements SmartChannel {
     }
     final r = PktReader(resp.timeout(options.timeout));
     final first = await r.readLine();
-    if (first != '# service=$service')
+    if (first != '# service=$service') {
       throw GitError('protocol error: bad service header');
+    }
     while (await r.read() != null) {}
     return r;
   }
@@ -116,6 +122,7 @@ class _HttpChannel implements SmartChannel {
     req.headers
       ..set(HttpHeaders.contentTypeHeader, 'application/x-$service-request')
       ..set(HttpHeaders.acceptHeader, 'application/x-$service-result');
+    _authorize(req);
     req.contentLength = body.length;
     req.add(body);
     final resp = await _send(req);

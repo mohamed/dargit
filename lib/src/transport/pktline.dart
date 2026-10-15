@@ -55,8 +55,9 @@ class PktReader {
     }
     _pos += 4;
     if (len < 4) return null;
-    if (!await _fill(len - 4))
+    if (!await _fill(len - 4)) {
       throw GitError('unexpected end of stream from remote');
+    }
     final data = Uint8List.sublistView(
         Uint8List.fromList(_buf.sublist(_pos, _pos + len - 4)));
     _pos += len - 4;

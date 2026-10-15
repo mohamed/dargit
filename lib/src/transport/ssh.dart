@@ -126,8 +126,9 @@ class SshTransport implements Transport {
     switch (auth.method) {
       case AuthMethod.sshKey:
         final path = auth.sshKeyPath;
-        if (path == null || path.isEmpty)
+        if (path == null || path.isEmpty) {
           throw GitError('no SSH key configured');
+        }
         final f = File(path);
         if (!f.existsSync()) throw GitError('SSH key $path not found');
         final pem = f.readAsStringSync();
@@ -243,8 +244,9 @@ class _AgentClient {
 
   Future<List<SSHIdentity>> identities() async {
     final resp = await _request([11]);
-    if (resp.isEmpty || resp[0] != 12)
+    if (resp.isEmpty || resp[0] != 12) {
       throw GitError('SSH agent refused to list keys');
+    }
     final n = readUint32(resp, 1);
     var p = 5;
     final out = <SSHIdentity>[];
@@ -275,8 +277,9 @@ class _AgentClient {
     _str(b, data);
     writeUint32(b, flags);
     final resp = await _request(b.takeBytes());
-    if (resp.isEmpty || resp[0] != 14)
+    if (resp.isEmpty || resp[0] != 14) {
       throw GitError('SSH agent refused to sign');
+    }
     final len = readUint32(resp, 1);
     return SSHRawSignature(Uint8List.fromList(resp.sublist(5, 5 + len)));
   }

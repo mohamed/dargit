@@ -151,8 +151,9 @@ Future<Advertisement> readAdvertisement(PktReader r) async {
     ad.refs[name] = id;
   }
   for (final c in ad.caps) {
-    if (c.startsWith('symref=HEAD:'))
+    if (c.startsWith('symref=HEAD:')) {
       ad.head = c.substring('symref=HEAD:'.length);
+    }
   }
   if (ad.head == null && ad.refs.containsKey('HEAD')) {
     // Older servers: guess from the id.
@@ -228,8 +229,9 @@ class SmartUploadSession implements UploadSession {
           text.startsWith('unshallow ')) {
         continue;
       }
-      if (sideband && d.isNotEmpty && d[0] >= 1 && d[0] <= 3)
+      if (sideband && d.isNotEmpty && d[0] >= 1 && d[0] <= 3) {
         return r.readSideband(d);
+      }
       throw GitError('protocol error: unexpected "${text.trim()}"');
     }
   }
@@ -285,16 +287,18 @@ class SmartReceiveSession implements ReceiveSession {
     if (unpack == null || !unpack.startsWith('unpack ')) {
       throw GitError('protocol error: bad push status "$unpack"');
     }
-    if (unpack != 'unpack ok')
+    if (unpack != 'unpack ok') {
       throw GitError('remote failed to unpack: ${unpack.substring(7)}');
+    }
     final errors = <String>[];
     while (true) {
       final line = await r.readLine();
       if (line == null) break;
       if (line.startsWith('ng ')) errors.add(line.substring(3));
     }
-    if (errors.isNotEmpty)
+    if (errors.isNotEmpty) {
       throw GitError('push rejected: ${errors.join('; ')}');
+    }
   }
 
   @override

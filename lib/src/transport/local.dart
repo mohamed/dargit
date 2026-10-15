@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import '../local_ops.dart';
+import '../objects.dart';
 import '../pack.dart';
 import '../packgen.dart';
 import '../repository.dart';
@@ -79,12 +80,16 @@ class _LocalReceive implements ReceiveSession {
           errors.add('${u.name} missing object');
           continue;
         }
-        // Make sure the full history arrived.
-        reachable(_repo.odb, [u.newId]);
+        final missing = _missingObject(u.newId);
+        if (missing != null) {
+          errors.add('${u.name} missing object $missing');
+          continue;
+        }
       }
     }
-    if (errors.isNotEmpty)
+    if (errors.isNotEmpty) {
       throw GitError('push rejected: ${errors.join('; ')}');
+    }
     for (final u in updates) {
       if (u.newId == zeroId) {
         _repo.refs.delete(u.name);
@@ -92,6 +97,37 @@ class _LocalReceive implements ReceiveSession {
         _repo.refs.update(u.name, u.newId);
       }
     }
+  }
+
+  /// First object missing below [tip] (stopping at commits already
+  /// reachable from the advertised refs), or null when complete.
+  String? _missingObject(String tip) {
+    final odb = _repo.odb;
+    final known = reachable(odb, refs.values);
+    final checkedTrees = <String>{};
+    String? walkTree(String id) {
+      if (!checkedTrees.add(id)) return null;
+      if (!odb.has(id)) return id;
+      for (final e in odb.readTree(id)) {
+        if (e.mode == modeGitlink) continue;
+        final m = e.isTree ? walkTree(e.id) : (odb.has(e.id) ? null : e.id);
+        if (m != null) return m;
+      }
+      return null;
+    }
+
+    final todo = [tip];
+    final seen = <String>{};
+    while (todo.isNotEmpty) {
+      final c = todo.removeLast();
+      if (known.contains(c) || !seen.add(c)) continue;
+      if (!odb.has(c)) return c;
+      final commit = odb.readCommit(c);
+      final m = walkTree(commit.tree);
+      if (m != null) return m;
+      todo.addAll(commit.parents);
+    }
+    return null;
   }
 
   @override
