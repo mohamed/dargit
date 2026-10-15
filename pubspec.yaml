@@ -1,0 +1,15 @@
+name: dartgit
+description: A small pure-Dart Git implementation (local repositories, smart protocol over file, HTTPS and SSH) for note-taking apps.
+version: 0.1.0
+repository: https://github.com/mohamed/dartgit
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  crypto: ^3.0.6
+  dartssh2: ^4.1.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.0

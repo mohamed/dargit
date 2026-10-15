@@ -1,0 +1,208 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:isolate';
+
+import 'local_ops.dart';
+import 'objects.dart';
+import 'repository.dart';
+import 'util.dart';
+
+enum AuthMethod { none, httpsToken, sshKey, sshAgent }
+
+/// Credentials for remote operations.
+class GitAuth {
+  GitAuth({
+    this.method = AuthMethod.none,
+    this.username,
+    this.password,
+    this.sshKeyPath,
+    this.sshPassphrase,
+  });
+
+  AuthMethod method;
+
+  /// HTTPS user name (defaults to `git` when empty) or SSH user override.
+  String? username;
+
+  /// HTTPS token or password.
+  String? password;
+
+  /// Path of an OpenSSH/PEM private key file.
+  String? sshKeyPath;
+
+  /// Passphrase of [sshKeyPath], if encrypted.
+  String? sshPassphrase;
+}
+
+enum SyncOutcome {
+  noRemote,
+  dirtyTree,
+  upToDate,
+  fastForwarded,
+  pushed,
+  rebased,
+  conflict
+}
+
+class SyncResult {
+  SyncResult(this.outcome, {this.message, this.conflictedFiles = const []});
+  SyncOutcome outcome;
+  String? message;
+  List<String> conflictedFiles;
+
+  @override
+  String toString() =>
+      'SyncResult($outcome${message == null ? '' : ', $message'}'
+      '${conflictedFiles.isEmpty ? '' : ', $conflictedFiles'})';
+}
+
+enum ConflictResolution { keepRemote, forcePushLocal, abort }
+
+/// Git operations used by GitMarker. Every method runs its blocking work on
+/// a background isolate (unless [useIsolates] is false) and reports
+/// failures as [GitException].
+class GitBackend {
+  GitBackend({
+    GitAuth? auth,
+    this.authorName = 'GitMarker',
+    this.authorEmail = 'gitmarker@localhost',
+    this.knownHostsPath,
+    this.networkTimeout = const Duration(minutes: 2),
+    this.useIsolates = true,
+  }) : auth = auth ?? GitAuth();
+
+  final GitAuth auth;
+  final String authorName;
+  final String authorEmail;
+
+  /// JSON file `{host: fingerprint}` with pinned SSH host keys.
+  final String? knownHostsPath;
+
+  /// Idle timeout for network operations.
+  final Duration networkTimeout;
+
+  /// Run operations in `Isolate.run` (keeps a Flutter UI responsive).
+  final bool useIsolates;
+
+  Future<T> _run<T>(String op, FutureOr<T> Function() body) async {
+    Future<T> guarded() async {
+      try {
+        return await body();
+      } on GitException {
+        rethrow;
+      } on GitError catch (e) {
+        throw GitException(op, e.message);
+      } on FileSystemException catch (e) {
+        throw GitException(
+            op,
+            '${e.message}${e.path == null ? '' : ': ${e.path}'}'
+            '${e.osError == null ? '' : ' (${e.osError!.message})'}');
+      } on FormatException catch (e) {
+        throw GitException(op, 'corrupt data: ${e.message}');
+      } on TimeoutException {
+        throw GitException(
+            op, 'network timeout after ${networkTimeout.inSeconds}s');
+      }
+    }
+
+    if (!useIsolates) return guarded();
+    return Isolate.run(guarded, debugName: 'dartgit:$op');
+  }
+
+  T _withRepo<T>(String dir, T Function(Repository repo) f) {
+    final repo = Repository.open(dir);
+    try {
+      return f(repo);
+    } finally {
+      repo.close();
+    }
+  }
+
+  Signature _signature() => Signature.now(authorName, authorEmail);
+
+  Future<bool> isRepository(String dir) => _run('isRepository', () {
+        final r = Repository.tryOpen(dir);
+        r?.close();
+        return r != null && !r.isBare;
+      });
+
+  Future<void> init(String dir, {required String branch}) =>
+      _run('init', () => Repository.init(dir, branch: branch).close());
+
+  Future<String?> remoteUrl(String dir) => _run('remoteUrl',
+      () => _withRepo(dir, (r) => r.config.get('remote', 'origin', 'url')));
+
+  Future<void> setRemoteUrl(String dir, String url) => _run('setRemoteUrl', () {
+        _withRepo(dir, (r) {
+          final c = r.config;
+          c.set('remote', 'origin', 'url', url);
+          if (c.get('remote', 'origin', 'fetch') == null) {
+            c.set('remote', 'origin', 'fetch',
+                '+refs/heads/*:refs/remotes/origin/*');
+          }
+          c.save();
+        });
+      });
+
+  Future<({bool clean, int unpushed})> status(String dir, String branch) =>
+      _run(
+          'status',
+          () => _withRepo(dir, (r) {
+                final clean = isClean(r);
+                final local = r.refs.resolve('refs/heads/$branch');
+                final remote = r.refs.resolve('refs/remotes/origin/$branch');
+                final unpushed = local == null
+                    ? 0
+                    : aheadBehindCommits(r.odb, local, remote).ahead;
+                return (clean: clean, unpushed: unpushed);
+              }));
+
+  /// Commits and pushed/fetched-commit counts between `refs/heads/<branch>`
+  /// and `refs/remotes/origin/<branch>`.
+  Future<({int ahead, int behind})> aheadBehind(String dir, String branch) =>
+      _run(
+          'aheadBehind',
+          () => _withRepo(dir, (r) {
+                final local = r.refs.resolve('refs/heads/$branch');
+                final remote = r.refs.resolve('refs/remotes/origin/$branch');
+                return aheadBehindCommits(r.odb, local, remote);
+              }));
+
+  Future<bool> commit(String dir, String message, {List<String>? paths}) =>
+      _run(
+          'commit',
+          () => _withRepo(dir, (r) {
+                final sig = _signature();
+                return commitChanges(r, message, paths: paths, author: sig);
+              }));
+
+  Future<List<Revision>> fileHistory(String dir, String path) =>
+      _run('fileHistory', () => _withRepo(dir, (r) => fileHistoryOf(r, path)));
+
+  Future<String?> showFile(String dir, String commit, String path) => _run(
+      'showFile',
+      () => _withRepo(dir, (r) {
+            final id = resolveCommitish(r, commit);
+            if (id == null) return null;
+            final o = r.odb.tryRead(id);
+            if (o == null || o.type != ObjectType.commit) return null;
+            final e = r.odb
+                .lookupPath(Commit.parse(o.data).tree, normalizePath(path));
+            if (e == null || e.isTree) return null;
+            return utf8.decode(r.odb.read(e.id).data, allowMalformed: true);
+          }));
+}
+
+({int ahead, int behind}) aheadBehindCommits(
+    ObjectDatabase odb, String? local, String? remote) {
+  if (local == null) {
+    return (
+      ahead: 0,
+      behind: remote == null ? 0 : reachable(odb, [remote]).length
+    );
+  }
+  return aheadBehind(odb, local, remote);
+}
+
+List<Revision> fileHistoryOf(Repository r, String path) => fileHistory(r, path);
