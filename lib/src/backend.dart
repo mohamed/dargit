@@ -5,7 +5,9 @@ import 'dart:isolate';
 
 import 'local_ops.dart';
 import 'objects.dart';
+import 'remote.dart';
 import 'repository.dart';
+import 'transport/transport.dart';
 import 'util.dart';
 
 enum AuthMethod { none, httpsToken, sshKey, sshAgent }
@@ -168,6 +170,114 @@ class GitBackend {
                 final remote = r.refs.resolve('refs/remotes/origin/$branch');
                 return aheadBehindCommits(r.odb, local, remote);
               }));
+
+  Transport _transport(String url) => openTransport(
+      url,
+      TransportOptions(
+          auth: auth, knownHostsPath: knownHostsPath, timeout: networkTimeout));
+
+  /// Clones [url] into [dir] and checks out [branch]. An empty remote is
+  /// fine (the branch stays unborn); a remote whose branches do not include
+  /// [branch] is an error and [dir] is removed.
+  Future<void> clone(String url, String dir, {required String branch}) =>
+      _run('clone', () => cloneInto(url, _transport(url), dir, branch));
+
+  Future<SyncResult> sync(String dir, String branch) => _run('sync', () async {
+        final repo = Repository.open(dir);
+        try {
+          return await _sync(repo, branch);
+        } finally {
+          repo.close();
+        }
+      });
+
+  Future<SyncResult> _sync(Repository repo, String branch) async {
+    final url = repo.config.get('remote', 'origin', 'url');
+    if (url == null || url.isEmpty) return SyncResult(SyncOutcome.noRemote);
+    if (!isClean(repo)) {
+      return SyncResult(SyncOutcome.dirtyTree,
+          message: 'uncommitted changes', conflictedFiles: changedPaths(repo));
+    }
+    final t = _transport(url);
+    await fetchOrigin(repo, t);
+    final ref = 'refs/heads/$branch';
+    final local = repo.refs.resolve(ref);
+    final remote = repo.refs.resolve('refs/remotes/origin/$branch');
+    if (remote == null) {
+      if (local == null) return SyncResult(SyncOutcome.upToDate);
+      await pushBranch(repo, t, branch);
+      return SyncResult(SyncOutcome.pushed,
+          message: 'created remote branch $branch');
+    }
+    if (local == null) {
+      moveBranch(repo, branch, remote);
+      return SyncResult(SyncOutcome.fastForwarded);
+    }
+    if (local == remote) return SyncResult(SyncOutcome.upToDate);
+    final ab = aheadBehindCommits(repo.odb, local, remote);
+    if (ab.ahead == 0) {
+      moveBranch(repo, branch, remote);
+      return SyncResult(SyncOutcome.fastForwarded,
+          message: '${ab.behind} new commit(s)');
+    }
+    if (ab.behind == 0) {
+      await pushBranch(repo, t, branch);
+      return SyncResult(SyncOutcome.pushed,
+          message: '${ab.ahead} commit(s) pushed');
+    }
+    final r = rebaseCommits(repo, local, remote, _signature());
+    if (r.tip == null) {
+      return SyncResult(SyncOutcome.conflict,
+          message: 'local and remote changes conflict',
+          conflictedFiles: r.conflicts);
+    }
+    moveBranch(repo, branch, r.tip!);
+    if (r.tip != remote) await pushBranch(repo, t, branch);
+    return SyncResult(SyncOutcome.rebased,
+        message:
+            '${ab.ahead} local commit(s) rebased onto ${ab.behind} remote commit(s)');
+  }
+
+  /// Resolves a conflict reported by [sync].
+  Future<SyncResult> resolve(String dir, String branch, ConflictResolution r) =>
+      _run('resolve', () async {
+        final repo = Repository.open(dir);
+        try {
+          switch (r) {
+            case ConflictResolution.abort:
+              // sync never leaves a half-done rebase behind.
+              return SyncResult(SyncOutcome.upToDate,
+                  message: 'aborted; nothing changed');
+            case ConflictResolution.keepRemote:
+              final url = repo.config.get('remote', 'origin', 'url');
+              if (url == null || url.isEmpty)
+                return SyncResult(SyncOutcome.noRemote);
+              if (!isClean(repo)) {
+                return SyncResult(SyncOutcome.dirtyTree,
+                    message: 'uncommitted changes',
+                    conflictedFiles: changedPaths(repo));
+              }
+              await fetchOrigin(repo, _transport(url));
+              final remote = repo.refs.resolve('refs/remotes/origin/$branch');
+              if (remote == null)
+                throw GitError("remote has no branch '$branch'");
+              moveBranch(repo, branch, remote);
+              return SyncResult(SyncOutcome.fastForwarded,
+                  message: 'local commits discarded; reset to remote');
+            case ConflictResolution.forcePushLocal:
+              final url = repo.config.get('remote', 'origin', 'url');
+              if (url == null || url.isEmpty)
+                return SyncResult(SyncOutcome.noRemote);
+              final lease = repo.refs.resolve('refs/remotes/origin/$branch');
+              await pushBranch(repo, _transport(url), branch,
+                  force: true, lease: lease);
+              return SyncResult(SyncOutcome.pushed,
+                  message: 'remote overwritten with local');
+          }
+        } finally {
+          repo.close();
+        }
+      });
 
   Future<bool> commit(String dir, String message, {List<String>? paths}) =>
       _run(
