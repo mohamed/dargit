@@ -244,12 +244,13 @@ class Git {
         await remote_.fetch(r, remote, _transport(r, remote), prune: prune);
       });
 
-  /// `git push [--force-with-lease] <remote> <branch>`.
-  Future<void> push(String dir, String branch,
+  /// `git push [--force-with-lease] <remote> <refspec>`; [refspec] is
+  /// `<src>[:<dst>]`, e.g. `main` or `HEAD:notes`.
+  Future<void> push(String dir, String refspec,
           {String remote = 'origin', bool forceWithLease = false}) =>
       _repo(
           'push',
           dir,
-          (r) => remote_.push(r, remote, _transport(r, remote), branch,
+          (r) => remote_.push(r, remote, _transport(r, remote), refspec,
               forceWithLease: forceWithLease));
 }

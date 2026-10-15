@@ -46,7 +46,7 @@ it writes are ordinary Git repositories: the Git CLI can read them, and
 | `log(dir, rev:, path:, follow:)` | `git log --first-parent [--follow] [<rev>] [-- <path>]` |
 | `show(dir, rev, path)` | `git show <rev>:<path>` (bytes) |
 | `fetch(dir, remote:, prune:)` | `git fetch [--prune] <remote>` |
-| `push(dir, branch, forceWithLease:)` | `git push [--force-with-lease] <remote> <branch>` |
+| `push(dir, refspec, forceWithLease:)` | `git push [--force-with-lease] <remote> <src>[:<dst>]` (e.g. `main`, `HEAD:notes`) |
 
 Objects: loose objects, packfiles with `.idx` v2 and OFS/REF deltas,
 SHA-1. Refs: loose, `packed-refs`, symbolic `HEAD` (unborn branches),
@@ -88,7 +88,7 @@ if (ahead > 0 && behind > 0) {
   final r = await git.rebase(dir, 'origin/main');
   if (!r.ok) print('conflicts: ${r.conflicts}');
 }
-if (ahead > 0) await git.push(dir, 'main');
+if (ahead > 0) await git.push(dir, 'HEAD:main');
 
 for (final e in await git.log(dir, path: 'today.md', follow: true)) {
   print('${e.date} ${e.authorName} ${e.subject} (${e.path})');

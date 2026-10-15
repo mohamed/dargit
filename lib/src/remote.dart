@@ -138,33 +138,51 @@ Future<FetchResult> fetch(Repository repo, String remote, Transport transport,
   }
 }
 
-/// `git push [--force-with-lease] <remote> <branch>` (pushes
-/// `refs/heads/<branch>` to the same name). Without [forceWithLease] the
-/// update must be a fast-forward; with it, the remote branch must still be
-/// where `refs/remotes/<remote>/<branch>` says (git's default lease).
-/// Updates the remote-tracking ref on success.
+/// `git push [--force-with-lease] <remote> <src>[:<dst>]`. [src] is a
+/// branch, `HEAD` or another revision; [dst] defaults to [src] when that
+/// is a branch, and to the current branch for `HEAD`. Without
+/// [forceWithLease] the update must be a fast-forward; with it, the remote
+/// branch must still be where `refs/remotes/<remote>/<dst>` says (git's
+/// default lease). Updates that remote-tracking ref on success.
 Future<void> push(
-    Repository repo, String remote, Transport transport, String branch,
+    Repository repo, String remote, Transport transport, String refspec,
     {bool forceWithLease = false}) async {
-  final ref = 'refs/heads/$branch';
-  final local = repo.refs.resolve(ref);
+  final colon = refspec.indexOf(':');
+  final src = colon < 0 ? refspec : refspec.substring(0, colon);
+  var dst = colon < 0 ? null : refspec.substring(colon + 1);
+  final local = revParse(repo, src);
   if (local == null) {
-    throw GitError('src refspec $branch does not match any');
+    throw GitError('src refspec $src does not match any');
   }
+  if (dst == null) {
+    if (src == 'HEAD') {
+      dst = repo.headRef;
+    } else if (repo.refs.resolve('refs/heads/$src') != null) {
+      dst = src;
+    } else if (src.startsWith('refs/heads/')) {
+      dst = src;
+    }
+    if (dst == null) throw GitError('The destination of $refspec is unknown');
+  }
+  final ref = dst.startsWith('refs/') ? dst : 'refs/heads/$dst';
+  if (!ref.startsWith('refs/heads/')) {
+    throw GitError('only branches can be pushed: $ref');
+  }
+  final branch = ref.substring('refs/heads/'.length);
   final tracking = '${_tracking(remote)}$branch';
   final session = await transport.openReceive();
   try {
     final theirs = session.refs[ref];
     if (forceWithLease) {
       if (theirs != repo.refs.resolve(tracking)) {
-        throw GitError('! [rejected] $branch -> $branch (stale info)');
+        throw GitError('! [rejected] $src -> $branch (stale info)');
       }
     } else if (theirs != null && theirs != local) {
       if (!repo.odb.has(theirs)) {
-        throw GitError('! [rejected] $branch -> $branch (fetch first)');
+        throw GitError('! [rejected] $src -> $branch (fetch first)');
       }
       if (!isAncestor(repo.odb, theirs, local)) {
-        throw GitError('! [rejected] $branch -> $branch (non-fast-forward)');
+        throw GitError('! [rejected] $src -> $branch (non-fast-forward)');
       }
     }
     if (theirs != local) {

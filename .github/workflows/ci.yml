@@ -17,3 +17,7 @@ jobs:
       - run: dart format --output=none --set-exit-if-changed .
       - run: dart analyze --fatal-infos
       - run: dart test
+      # SSH transport against a throwaway local sshd the tests start.
+      - run: sudo apt-get update && sudo apt-get install -y openssh-server
+      - run: sudo mkdir -p /run/sshd
+      - run: dart test --run-skipped -t ssh

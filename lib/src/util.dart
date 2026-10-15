@@ -18,7 +18,7 @@ class GitException implements Exception {
   String toString() => 'GitException($operation): $message';
 }
 
-/// Internal error with no operation yet; [GitBackend] wraps it in a
+/// Internal error with no operation yet; [Git] wraps it in a
 /// [GitException] carrying the operation name.
 class GitError implements Exception {
   GitError(this.message);

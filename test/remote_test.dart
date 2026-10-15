@@ -252,6 +252,28 @@ void main() {
         if (hasGit) git(['fsck', '--strict', '--no-dangling'], cwd: remote);
       });
 
+      test('push with a refspec', () async {
+        final (remote, a, _) = await setupPair();
+        writeFile(a, 'n.md', 'notes\n');
+        await commitAll(alice, a, 'notes only');
+        await alice.push(a, 'HEAD:notes');
+        expect(await alice.revParse(a, 'origin/notes'),
+            await alice.revParse(a, 'HEAD'));
+        expect(await alice.revParse(a, 'origin/main'),
+            isNot(await alice.revParse(a, 'HEAD')));
+        await alice.push(a, 'HEAD');
+        expect(await alice.revParse(a, 'origin/main'),
+            await alice.revParse(a, 'HEAD'));
+        await expectLater(
+            alice.push(a, 'nope'),
+            throwsA(isA<GitException>().having((e) => e.message, 'message',
+                'src refspec nope does not match any')));
+        if (hasGit) {
+          expect(git(['log', '-1', '--format=%s', 'notes'], cwd: remote),
+              'notes only\n');
+        }
+      });
+
       test('remote add, set-url, remove', () async {
         final dir = tempDir();
         await bob.init(dir);

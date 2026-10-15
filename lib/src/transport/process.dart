@@ -4,7 +4,7 @@ import 'dart:io';
 import 'transport.dart';
 
 /// Runs `git-upload-pack` / `git-receive-pack` from the Git CLI on a local
-/// path. Not used by [GitBackend] (mobile platforms have no git binary); it
+/// path. Not used by [Git] (mobile platforms have no git binary); it
 /// exists so tests can exercise the stateful smart protocol code shared
 /// with SSH without an SSH server.
 class ProcessTransport implements Transport {
