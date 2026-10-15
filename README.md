@@ -31,7 +31,8 @@ it writes are ordinary Git repositories: the Git CLI can read them, and
 
 | `Git` method | git command |
 | --- | --- |
-| `init(dir, initialBranch:, bare:)` | `git init [-b <branch>] [--bare]` |
+| `init(dir, initialBranch:, bare:, objectFormat:)` | `git init [-b <branch>] [--bare] [--object-format=sha1\|sha256]` |
+| `objectFormat(dir)` | `git rev-parse --show-object-format` |
 | `isRepository(dir)` | is `dir` the top of a work tree |
 | `clone(url, dir, branch:)` | `git clone [-b <branch>] <url> <dir>` |
 | `remoteGetUrl` / `remoteAdd` / `remoteSetUrl` / `remoteRemove` | `git remote get-url / add / set-url / remove` |
@@ -49,16 +50,28 @@ it writes are ordinary Git repositories: the Git CLI can read them, and
 | `push(dir, refspec, forceWithLease:)` | `git push [--force-with-lease] <remote> <src>[:<dst>]` (e.g. `main`, `HEAD:notes`) |
 
 Objects: loose objects, packfiles with `.idx` v2 and OFS/REF deltas,
-SHA-1. Refs: loose, `packed-refs`, symbolic `HEAD` (unborn branches),
+SHA-1 and SHA-256 (see below). Refs: loose, `packed-refs`, symbolic `HEAD` (unborn branches),
 reflogs. Index v2/v3 read, v2 written. `.gitignore` and
 `.git/info/exclude` are honoured. Transports (smart protocol v0): local
 paths and `file://`, HTTP(S), SSH via [`dartssh2`](https://pub.dev/packages/dartssh2).
 Every command runs in a background isolate; network operations fail with a
 `GitException` after an idle timeout (2 minutes by default).
 
+## SHA-1 and SHA-256
+
+Every repository has one object format, as in git: SHA-1 (git's
+historical default) or SHA-256 (`extensions.objectFormat = sha256`, the
+default planned for Git 3). dartgit reads the format from the repository's
+config and uses it for object ids, trees, the index, pack and pack-index
+files and checksums. `init(objectFormat: ObjectFormat.sha256)` creates a
+SHA-256 repository; `clone` takes the remote's format from the
+`object-format` capability; `fetch` and `push` refuse a remote with the
+other format, as git does. Every test runs in both formats against the git
+CLI.
+
 ## Non-goals
 
-SHA-256 repositories, submodules, LFS, merges (only rebase), tags, hooks,
+Converting a repository between SHA-1 and SHA-256, submodules, LFS, merges (only rebase), tags, hooks,
 CRLF conversion, sparse checkout, shallow clones, protocol v2, the dumb
 HTTP protocol, and reading global/system git config. See
 [STATUS.md](STATUS.md) for the design decisions and known differences.

@@ -2,8 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:crypto/crypto.dart' as crypto;
-
 /// Error raised by every dartgit operation.
 class GitException implements Exception {
   GitException(this.operation, this.message);
@@ -27,8 +25,6 @@ class GitError implements Exception {
   String toString() => message;
 }
 
-const zeroId = '0000000000000000000000000000000000000000';
-
 String toHex(List<int> bytes) {
   const digits = '0123456789abcdef';
   final sb = StringBuffer();
@@ -46,14 +42,6 @@ Uint8List fromHex(String hex) {
   }
   return out;
 }
-
-final _hexRe = RegExp(r'^[0-9a-f]{40}$');
-bool isObjectId(String s) => _hexRe.hasMatch(s);
-
-Uint8List sha1Bytes(List<int> data) =>
-    Uint8List.fromList(crypto.sha1.convert(data).bytes);
-
-String sha1Hex(List<int> data) => crypto.sha1.convert(data).toString();
 
 final Uint32List _crcTable = () {
   final t = Uint32List(256);

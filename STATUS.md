@@ -11,6 +11,7 @@
 - [x] 7. Git-shaped API: one `Git` method per git command; application
   policy (sync, conflict resolution, TOFU host keys, `.gitmarker/`) moved
   to GitMarker; reflogs written; BSD-3-Clause licence.
+- [x] 8. SHA-256 repositories (`extensions.objectFormat`), next to SHA-1.
 
 ## Layout
 
@@ -25,8 +26,17 @@
 | `objects.dart`, `pack.dart`, `packgen.dart`, `inflate.dart`, `refs.dart`, `index.dart`, `config.dart`, `ignore.dart` | Git file formats |
 | `lib/src/transport/` | pkt-line, smart protocol, local/HTTP/SSH channels |
 | `lib/src/credentials.dart` | `Credentials`, `HostKeyVerifier` |
+| `lib/src/hash.dart` | `ObjectFormat` (SHA-1 / SHA-256): the hash, id sizes and the zero id, in one place |
 
 ## Design decisions and known differences from git
+
+- Object format: `Repository` reads `core.repositoryformatversion` and
+  `extensions.objectFormat` when it opens a repository and hands the
+  `ObjectFormat` to every component that hashes or embeds ids (object
+  database, trees, index, packs and `.idx`, refs, protocol). Nothing else
+  knows id lengths. Repository format version 1 with other extensions is
+  accepted as long as the object format is known; versions above 1 are
+  refused. No conversion between formats and no `compatObjectFormat`.
 
 - Core is synchronous `dart:io`; `Git` runs each command in `Isolate.run`
   (`useIsolates: false` for debugging). A `HostKeyVerifier` must therefore

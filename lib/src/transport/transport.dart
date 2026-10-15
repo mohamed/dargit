@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import '../credentials.dart';
+import '../hash.dart';
 import '../util.dart';
 import 'http.dart';
 import 'local.dart';
@@ -14,8 +15,8 @@ import 'ssh.dart';
 class RefUpdate {
   RefUpdate(this.name, this.oldId, this.newId);
   final String name;
-  final String oldId; // zeroId when creating
-  final String newId; // zeroId when deleting
+  final String oldId; // all zeros when creating
+  final String newId; // all zeros when deleting
 }
 
 /// Connection to `git-upload-pack` (fetch side).
@@ -26,6 +27,9 @@ abstract class UploadSession {
   /// Target of the remote HEAD if advertised (e.g. `refs/heads/main`).
   String? get head;
 
+  /// The remote repository's object format.
+  ObjectFormat get format;
+
   /// Requests a pack with [wants], telling the server we have [haves].
   Future<Uint8List> fetchPack(List<String> wants, List<String> haves);
 
@@ -35,6 +39,9 @@ abstract class UploadSession {
 /// Connection to `git-receive-pack` (push side).
 abstract class ReceiveSession {
   Map<String, String> get refs;
+
+  /// The remote repository's object format.
+  ObjectFormat get format;
 
   /// Sends [updates] and [pack]; throws [GitError] when a ref is rejected.
   Future<void> push(List<RefUpdate> updates, Uint8List? pack);
@@ -128,6 +135,23 @@ class Advertisement {
   final refs = <String, String>{};
   final caps = <String>{};
   String? head;
+
+  /// From the `object-format` capability; servers that do not send it
+  /// only speak SHA-1.
+  ObjectFormat get format {
+    for (final c in caps) {
+      if (c.startsWith('object-format=')) {
+        return ObjectFormat.parse(c.substring('object-format='.length));
+      }
+    }
+    return ObjectFormat.sha1;
+  }
+
+  /// The capability a client echoes to confirm the object format.
+  List<String> get formatCap => [
+        if (caps.any((c) => c.startsWith('object-format=')))
+          'object-format=${format.name}',
+      ];
 }
 
 Future<Advertisement> readAdvertisement(PktReader r) async {
@@ -148,7 +172,9 @@ Future<Advertisement> readAdvertisement(PktReader r) async {
       }
     }
     if (l.length < 42) continue;
-    final id = l.substring(0, 40), name = l.substring(41);
+    final sp = l.indexOf(' ');
+    if (sp < 0) continue;
+    final id = l.substring(0, sp), name = l.substring(sp + 1);
     if (name == 'capabilities^{}' || name.endsWith('^{}')) continue;
     ad.refs[name] = id;
   }
@@ -191,6 +217,8 @@ class SmartUploadSession implements UploadSession {
   @override
   Map<String, String> get refs => _ad.refs;
   @override
+  ObjectFormat get format => _ad.format;
+  @override
   String? get head => _ad.head;
 
   @override
@@ -203,6 +231,7 @@ class SmartUploadSession implements UploadSession {
         'side-band',
       if (_ad.caps.contains('ofs-delta')) 'ofs-delta',
       if (_ad.caps.contains('no-progress')) 'no-progress',
+      ..._ad.formatCap,
       agent,
     ];
     final body = BytesBuilder(copy: false);
@@ -260,6 +289,8 @@ class SmartReceiveSession implements ReceiveSession {
 
   @override
   Map<String, String> get refs => _ad.refs;
+  @override
+  ObjectFormat get format => _ad.format;
 
   @override
   Future<void> push(List<RefUpdate> updates, Uint8List? pack) async {
@@ -268,9 +299,10 @@ class SmartReceiveSession implements ReceiveSession {
       'report-status',
       if (_ad.caps.contains('ofs-delta')) 'ofs-delta',
       if (_ad.caps.contains('atomic') && updates.length > 1) 'atomic',
+      ..._ad.formatCap,
       agent,
     ];
-    if (updates.any((u) => u.newId == zeroId) &&
+    if (updates.any((u) => isZeroId(u.newId)) &&
         !_ad.caps.contains('delete-refs')) {
       throw GitError('remote does not support deleting refs');
     }
@@ -281,7 +313,7 @@ class SmartReceiveSession implements ReceiveSession {
       body.add(pkt(i == 0 ? '$line\u0000${caps.join(' ')}\n' : '$line\n'));
     }
     body.add(flushPkt);
-    if (updates.any((u) => u.newId != zeroId)) {
+    if (updates.any((u) => !isZeroId(u.newId))) {
       body.add(pack ?? Uint8List(0));
     }
     final r = await _ch.request('git-receive-pack', body.takeBytes());

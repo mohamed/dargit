@@ -106,7 +106,7 @@ void main() {
       skip: missing.isEmpty ? null : 'missing ${missing.join(', ')}', () {
     Sshd? server;
     int port() => server!.port;
-    late String keys, remote, known;
+    late String keys, remote, remote256, known;
     const passphrase = 'correct horse';
 
     setUpAll(() async {
@@ -144,7 +144,17 @@ void main() {
     setUp(() {
       final root = tempDir('sshremote');
       remote = '$root/notes.git';
+      remote256 = '$root/notes256.git';
       git(['init', '-q', '--bare', '-b', 'main', remote], cwd: root);
+      git([
+        'init',
+        '-q',
+        '--bare',
+        '-b',
+        'main',
+        '--object-format=sha256',
+        remote256
+      ], cwd: root);
       known = '${tempDir()}/known_hosts.json';
     });
 
@@ -160,6 +170,20 @@ void main() {
       await g.add(dir, ['.']);
       await g.commit(dir, m);
     }
+
+    test('SHA-256 repository over SSH', () async {
+      final g = keyGit('id_rsa');
+      final url256 = 'ssh://$_user@127.0.0.1:${port()}$remote256';
+      final a = '${tempDir()}/a', b = '${tempDir()}/b';
+      await g.clone(url256, a, branch: 'main');
+      expect(await g.objectFormat(a), ObjectFormat.sha256);
+      writeFile(a, 'n.md', 'n\n');
+      await commitAll(g, a, 'one');
+      await g.push(a, 'main');
+      await g.clone(url256, b);
+      expect(readFile(b, 'n.md'), 'n\n');
+      git(['fsck', '--strict', '--no-dangling'], cwd: remote256);
+    });
 
     test('clone, push, rebase with key files; host key pinned', () async {
       final ed = keyGit('id_ed25519', pass: passphrase), rsa = keyGit('id_rsa');

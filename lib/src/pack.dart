@@ -4,15 +4,17 @@ import 'dart:typed_data';
 import 'inflate.dart';
 import 'objects.dart';
 import 'util.dart';
+import 'hash.dart';
 
 const _typeOfsDelta = 6;
 const _typeRefDelta = 7;
 
 /// A `.idx` version 2 file loaded into memory.
 class PackIndex {
-  PackIndex._(this.count, this._fanout, this._ids, this._offsets);
+  PackIndex._(this.count, this._fanout, this._ids, this._offsets, this._n);
 
-  factory PackIndex.parse(Uint8List b) {
+  factory PackIndex.parse(Uint8List b, ObjectFormat format) {
+    final size = format.size;
     if (b.length < 8 + 1024 ||
         readUint32(b, 0) != 0xff744f63 ||
         readUint32(b, 4) != 2) {
@@ -24,8 +26,8 @@ class PackIndex {
     }
     final n = fanout[255];
     final idsStart = 8 + 1024;
-    final ids = Uint8List.sublistView(b, idsStart, idsStart + n * 20);
-    final offStart = idsStart + n * 20 + n * 4;
+    final ids = Uint8List.sublistView(b, idsStart, idsStart + n * size);
+    final offStart = idsStart + n * size + n * 4;
     final large = offStart + n * 4;
     final offsets = List<int>.filled(n, 0);
     for (var i = 0; i < n; i++) {
@@ -37,16 +39,17 @@ class PackIndex {
         offsets[i] = v;
       }
     }
-    return PackIndex._(n, fanout, ids, offsets);
+    return PackIndex._(n, fanout, ids, offsets, size);
   }
 
   final int count;
   final Uint32List _fanout;
   final Uint8List _ids;
   final List<int> _offsets;
+  final int _n; // id size in bytes
   List<int>? _sortedOffsets;
 
-  String idAt(int i) => toHex(Uint8List.sublistView(_ids, i * 20, i * 20 + 20));
+  String idAt(int i) => toHex(Uint8List.sublistView(_ids, i * _n, i * _n + _n));
   int offsetAt(int i) => _offsets[i];
 
   /// Index of [id] in this pack or -1.
@@ -58,8 +61,8 @@ class PackIndex {
     while (lo < hi) {
       final mid = (lo + hi) >> 1;
       var c = 0;
-      final base = mid * 20;
-      for (var k = 0; k < 20 && c == 0; k++) {
+      final base = mid * _n;
+      for (var k = 0; k < _n && c == 0; k++) {
         c = _ids[base + k] - target[k];
       }
       if (c == 0) return mid;
@@ -101,7 +104,7 @@ class PackFile {
   final _baseCache = <int, GitObject>{};
 
   PackIndex get index =>
-      _index ??= PackIndex.parse(File(idxPath).readAsBytesSync());
+      _index ??= PackIndex.parse(File(idxPath).readAsBytesSync(), db.format);
 
   RandomAccessFile get _file {
     var f = _raf;
@@ -135,7 +138,7 @@ class PackFile {
     if (depth > 10000) throw GitError('delta chain too long');
     _file;
     var end = index.nextOffset(offset);
-    if (end < 0) end = _length - 20;
+    if (end < 0) end = _length - db.format.size;
     final raw = _bytes(offset, end - offset);
     var p = 0;
     var c = raw[p++];
@@ -159,8 +162,8 @@ class PackFile {
       final base = _readAt(offset - rel, depth + 1);
       result = GitObject(base.type, applyDelta(base.data, delta));
     } else if (type == _typeRefDelta) {
-      final baseId = toHex(raw.sublist(p, p + 20));
-      p += 20;
+      final baseId = toHex(raw.sublist(p, p + db.format.size));
+      p += db.format.size;
       final delta = inflateKnown(Uint8List.sublistView(raw, p));
       final bi = index.find(baseId);
       final base =
@@ -235,7 +238,7 @@ Uint8List applyDelta(Uint8List base, Uint8List delta) {
 // Writing packs
 
 /// Builds an undeltified version 2 pack from objects.
-Uint8List buildPack(Iterable<GitObject> objects) {
+Uint8List buildPack(Iterable<GitObject> objects, ObjectFormat format) {
   final list = objects.toList();
   final b = BytesBuilder(copy: false)
     ..add([0x50, 0x41, 0x43, 0x4b, 0, 0, 0, 2]);
@@ -255,7 +258,7 @@ Uint8List buildPack(Iterable<GitObject> objects) {
   final body = b.takeBytes();
   return (BytesBuilder(copy: false)
         ..add(body)
-        ..add(sha1Bytes(body)))
+        ..add(format.hash(body)))
       .takeBytes();
 }
 
@@ -276,7 +279,7 @@ class _PackEntry {
 /// objects (like Git's `transfer.unpackLimit`); larger ones are written as a
 /// `.pack` plus a version 2 `.idx`. Returns the number of objects.
 int storePack(ObjectDatabase db, Uint8List pack, {int unpackLimit = 100}) {
-  if (pack.length < 32 ||
+  if (pack.length < 12 + db.format.size ||
       pack[0] != 0x50 ||
       pack[1] != 0x41 ||
       pack[2] != 0x43 ||
@@ -288,8 +291,10 @@ int storePack(ObjectDatabase db, Uint8List pack, {int unpackLimit = 100}) {
     throw GitError('unsupported pack version $version');
   }
   final count = readUint32(pack, 8);
-  final trailer = toHex(Uint8List.sublistView(pack, pack.length - 20));
-  if (sha1Hex(Uint8List.sublistView(pack, 0, pack.length - 20)) != trailer) {
+  final format = db.format, n = format.size;
+  final trailer = toHex(Uint8List.sublistView(pack, pack.length - n));
+  if (format.hashHex(Uint8List.sublistView(pack, 0, pack.length - n)) !=
+      trailer) {
     throw GitError('pack checksum mismatch');
   }
 
@@ -318,8 +323,8 @@ int storePack(ObjectDatabase db, Uint8List pack, {int unpackLimit = 100}) {
       }
       baseOffset = start - rel;
     } else if (type == _typeRefDelta) {
-      baseId = toHex(pack.sublist(p, p + 20));
-      p += 20;
+      baseId = toHex(pack.sublist(p, p + n));
+      p += n;
     } else if (type < 1 || type > 4) {
       throw GitError('bad object type $type in pack');
     }
@@ -331,12 +336,12 @@ int storePack(ObjectDatabase db, Uint8List pack, {int unpackLimit = 100}) {
     entries.add(e);
     byOffset[start] = e;
   }
-  if (p != pack.length - 20) throw GitError('trailing garbage in pack');
+  if (p != pack.length - n) throw GitError('trailing garbage in pack');
 
   final byId = <String, _PackEntry>{};
   for (final e in entries) {
     if (e.type <= 4) {
-      e.id = hashObject(ObjectType.fromCode(e.type), e.data);
+      e.id = hashObject(ObjectType.fromCode(e.type), e.data, format);
       byId[e.id!] = e;
     }
   }
@@ -370,7 +375,7 @@ int storePack(ObjectDatabase db, Uint8List pack, {int unpackLimit = 100}) {
       d
         ..type = base.type.code
         ..data = data
-        ..id = hashObject(base.type, data);
+        ..id = hashObject(base.type, data, format);
       byId[d.id!] = d;
       base = GitObject(base.type, data);
     }
@@ -451,7 +456,7 @@ int storePack(ObjectDatabase db, Uint8List pack, {int unpackLimit = 100}) {
   final idxBody = idx.takeBytes();
   final idxBytes = (BytesBuilder(copy: false)
         ..add(idxBody)
-        ..add(sha1Bytes(idxBody)))
+        ..add(format.hash(idxBody)))
       .takeBytes();
   final base = joinPath(db.objectsDir, 'pack/pack-$trailer');
   Directory(joinPath(db.objectsDir, 'pack')).createSync(recursive: true);

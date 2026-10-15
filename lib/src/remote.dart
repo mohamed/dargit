@@ -4,6 +4,7 @@ library;
 
 import 'dart:io';
 
+import 'hash.dart';
 import 'history.dart';
 import 'objects.dart';
 import 'pack.dart';
@@ -97,9 +98,24 @@ class FetchResult {
 /// `git fetch [--prune] <remote>` with the default refspec
 /// `+refs/heads/*:refs/remotes/<remote>/*` (tags are not fetched).
 Future<FetchResult> fetch(Repository repo, String remote, Transport transport,
+        {bool prune = false}) async =>
+    _fetch(repo, remote, await transport.openUpload(), prune: prune);
+
+/// Refuses a remote whose object format differs from [repo]'s, like git
+/// ("mismatched object format").
+void _checkFormat(Repository repo, ObjectFormat theirs) {
+  if (theirs != repo.format) {
+    throw GitError('the remote uses ${theirs.name} object ids but this '
+        'repository uses ${repo.format.name}');
+  }
+}
+
+/// Fetches through an open [session] and closes it.
+Future<FetchResult> _fetch(
+    Repository repo, String remote, UploadSession session,
     {bool prune = false, String reflogPrefix = 'fetch'}) async {
-  final session = await transport.openUpload();
   try {
+    _checkFormat(repo, session.format);
     final heads = <String, String>{
       for (final e in session.refs.entries)
         if (e.key.startsWith('refs/heads/')) e.key: e.value,
@@ -172,6 +188,7 @@ Future<void> push(
   final tracking = '${_tracking(remote)}$branch';
   final session = await transport.openReceive();
   try {
+    _checkFormat(repo, session.format);
     final theirs = session.refs[ref];
     if (forceWithLease) {
       if (theirs != repo.refs.resolve(tracking)) {
@@ -190,8 +207,8 @@ Future<void> push(
         ...session.refs.values,
         ...repo.refs.list(_tracking(remote)).values,
       };
-      await session.push([RefUpdate(ref, theirs ?? zeroId, local)],
-          buildPack(objectsToSend(repo.odb, [local], haves)));
+      await session.push([RefUpdate(ref, theirs ?? repo.format.zeroId, local)],
+          buildPack(objectsToSend(repo.odb, [local], haves), repo.format));
     }
     if (repo.refs.resolve(tracking) != local) {
       repo.updateRef(tracking, local, 'update by push');
@@ -215,11 +232,19 @@ Future<void> clone(String url, Transport transport, String dir,
   final existed = d.existsSync();
   Repository? repo;
   try {
-    repo = Repository.init(dir, branch: branch ?? 'master')
-      ..identity = identity;
-    remoteAdd(repo, 'origin', url);
+    // The new repository takes the remote's object format.
+    final session = await transport.openUpload();
+    try {
+      repo = Repository.init(dir,
+          branch: branch ?? 'master', format: session.format)
+        ..identity = identity;
+      remoteAdd(repo, 'origin', url);
+    } catch (_) {
+      await session.close();
+      rethrow;
+    }
     final fetched =
-        await fetch(repo, 'origin', transport, reflogPrefix: 'clone');
+        await _fetch(repo, 'origin', session, reflogPrefix: 'clone');
     final heads = fetched.branches;
     if (heads.isEmpty) return; // empty repository
     final target = branch == null ? fetched.head : 'refs/heads/$branch';

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'util.dart';
+import 'hash.dart';
 
 class IndexEntry {
   IndexEntry({
@@ -67,15 +68,16 @@ class GitIndex {
   /// Modification time of the index file when read, for racy-git checks.
   final DateTime? fileMtime;
 
-  static GitIndex read(String gitDir) {
+  static GitIndex read(String gitDir, ObjectFormat format) {
     final f = File(joinPath(gitDir, 'index'));
     if (!f.existsSync()) return GitIndex({});
     final b = f.readAsBytesSync();
-    final idx = parse(b, f.statSync().modified);
+    final idx = parse(b, format, f.statSync().modified);
     return idx;
   }
 
-  static GitIndex parse(Uint8List b, [DateTime? mtime]) {
+  static GitIndex parse(Uint8List b, ObjectFormat format, [DateTime? mtime]) {
+    final idSize = format.size;
     if (b.length < 12 || utf8.decode(b.sublist(0, 4)) != 'DIRC') {
       throw GitError('invalid index file');
     }
@@ -97,8 +99,8 @@ class GitIndex {
       final ctimeS = u32(), ctimeN = u32(), mtimeS = u32(), mtimeN = u32();
       final dev = u32(), ino = u32(), mode = u32(), uid = u32(), gid = u32();
       final size = u32();
-      final id = toHex(b.sublist(p, p + 20));
-      p += 20;
+      final id = toHex(b.sublist(p, p + idSize));
+      p += idSize;
       final flags = (b[p] << 8) | b[p + 1];
       p += 2;
       if (flags & 0x4000 != 0) p += 2; // extended flags (v3)
@@ -133,7 +135,7 @@ class GitIndex {
     return out;
   }
 
-  Uint8List serialize() {
+  Uint8List serialize(ObjectFormat format) {
     final all = [...entries.values, ...conflicts]..sort((a, c) {
         final d = comparePaths(a.path, c.path);
         return d != 0 ? d : a.stage - c.stage;
@@ -162,11 +164,11 @@ class GitIndex {
     final body = b.takeBytes();
     return (BytesBuilder(copy: false)
           ..add(body)
-          ..add(sha1Bytes(body)))
+          ..add(format.hash(body)))
         .takeBytes();
   }
 
-  void write(String gitDir) {
+  void write(String gitDir, ObjectFormat format) {
     final path = joinPath(gitDir, 'index');
     final lock = File('$path.lock');
     try {
@@ -175,7 +177,7 @@ class GitIndex {
       throw GitError('cannot lock index (${lock.path} exists)');
     }
     try {
-      lock.writeAsBytesSync(serialize(), flush: true);
+      lock.writeAsBytesSync(serialize(format), flush: true);
       lock.renameSync(path);
     } catch (_) {
       if (lock.existsSync()) lock.deleteSync();
