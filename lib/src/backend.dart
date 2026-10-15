@@ -30,7 +30,8 @@ class GitAuth {
   /// HTTPS token or password.
   String? password;
 
-  /// Path of an OpenSSH/PEM private key file.
+  /// Path of an OpenSSH/PEM private key file. With [AuthMethod.sshAgent] it
+  /// may name the agent socket (default: `SSH_AUTH_SOCK`).
   String? sshKeyPath;
 
   /// Passphrase of [sshKeyPath], if encrypted.

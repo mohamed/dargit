@@ -7,7 +7,7 @@
 - [x] 3. Local transport (path / `file://`): clone, fetch (+prune), push
 - [x] 4. `sync` / rebase / conflict / `resolve`
 - [x] 5. HTTPS smart transport
-- [ ] 6. SSH transport (dartssh2)
+- [x] 6. SSH transport (dartssh2)
 
 ## Design decisions
 
@@ -59,3 +59,25 @@
   username is empty; `user:token@` in the URL also works. Tests run against
   `git http-backend` behind a local CGI bridge; a public-repository clone is
   tagged `network` (skipped by default).
+- SSH: `dartssh2` exec channel running `git-upload-pack '<path>'` /
+  `git-receive-pack '<path>'`. User from the URL, else `GitAuth.username`,
+  else `git`. Keys: OpenSSH or PEM private keys, encrypted ones need
+  `sshPassphrase`. Agent: minimal ssh-agent client over the Unix socket in
+  `SSH_AUTH_SOCK` (or `sshKeyPath` when the method is `sshAgent`); not on
+  Windows. Host keys: `knownHostsPath` JSON `{"host" | "[host]:port":
+  "SHA256:<base64>"}`, trusted on first use, a different key is refused;
+  without `knownHostsPath` every host key is accepted.
+- The SSH tests (`-t ssh`) start a throwaway `sshd` on 127.0.0.1 with
+  generated keys. They were not run in the development container (no
+  sshd); the same SSH code was verified there against a throwaway
+  paramiko-based server (ed25519 + passphrase, RSA PEM without `.pub`,
+  agent with RSA and ed25519, pinning and changed-key refusal).
+
+## Known limitations / ideas
+
+- Whole packs are held in memory while indexing; fine for notes, not for
+  huge repositories.
+- Ahead/behind and push negotiation walk the full history (no commit-graph).
+- No pack deltas are generated on push.
+- No `core.autocrlf` handling; Unicode normalisation of file names (macOS)
+  is not handled.

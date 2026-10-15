@@ -147,7 +147,10 @@ class SshTransport implements Transport {
           throw GitError('cannot load SSH key $path: $e');
         }
       case AuthMethod.sshAgent:
-        return _Identities.fromAgent();
+        final sock = (auth.sshKeyPath ?? '').isNotEmpty
+            ? auth.sshKeyPath
+            : Platform.environment['SSH_AUTH_SOCK'];
+        return _Identities.fromAgent(sock);
       case AuthMethod.none:
       case AuthMethod.httpsToken:
         return _Identities(const [], null);
@@ -160,8 +163,7 @@ class _Identities {
   final List<SSHIdentity> keys;
   final _AgentClient? _agent;
 
-  static Future<_Identities> fromAgent() async {
-    final sock = Platform.environment['SSH_AUTH_SOCK'];
+  static Future<_Identities> fromAgent(String? sock) async {
     if (Platform.isWindows || sock == null || sock.isEmpty) {
       throw GitError('no SSH agent available (SSH_AUTH_SOCK not set)');
     }
