@@ -71,10 +71,11 @@
 - `dart test`: unit tests, every remote scenario via a path, `file://` and
   the real `git upload-pack`/`receive-pack`, smart HTTP via
   `git http-backend`, interop checks with the git CLI.
-- `-t network`: public HTTPS clone. `-t ssh`: throwaway sshd (not runnable
-  in the development container; the SSH code was verified there against a
-  throwaway paramiko server: ed25519 + passphrase, RSA PEM without `.pub`,
-  agent, host-key verifier, rebase + push).
+- `-t network`: public HTTPS clone. `-t ssh`: throwaway OpenSSH sshd with
+  generated keys (ed25519 + passphrase, RSA PEM without `.pub`, agent,
+  host-key verifier, rebase + push); runs in CI.
+- GitMarker's own Git and controller tests (97 non-widget tests) pass on
+  this API.
 
 ## Known limitations / ideas
 
