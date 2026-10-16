@@ -293,6 +293,50 @@ void main() {
         expect(cli(['show-ref', '-d'], d), cli(['show-ref', '-d'], t));
       });
 
+      test('a ref that cannot be written leaves no lock, as in git', () {
+        final d = gitRepo(fmt);
+        final head = cliRevParse(d, 'HEAD')!;
+        cli(['branch', 'a/b'], d);
+        expect(
+            runGit(['update-ref', 'refs/heads/a', head], d).exitCode, isNot(0));
+        expect(() => RefStore('$d/.git').update('refs/heads/a', head),
+            throwsA(isA<FileSystemException>()));
+        expect(File('$d/.git/refs/heads/a.lock').existsSync(), isFalse);
+      });
+
+      test('an object whose size disagrees with its pack header', () {
+        final d = gitRepo(fmt);
+        final blob = utf8.encode('hello');
+        final id = hashObject(ObjectType.blob, blob, fmt);
+        storePack(ObjectDatabase('$d/.git/objects', fmt),
+            rawPack(fmt, 1, [0x35, ...zlib.encode(blob)]), // blob, size 5
+            unpackLimit: 1);
+        final pack = Directory('$d/.git/objects/pack')
+            .listSync()
+            .whereType<File>()
+            .firstWhere((f) => f.path.endsWith('.pack'));
+        final bytes = pack.readAsBytesSync();
+        bytes[12] = 0x36; // now claims 6 bytes
+        pack.writeAsBytesSync(bytes);
+        expect(runGit(['cat-file', 'blob', id], d).exitCode, isNot(0));
+        expect(
+            () => ObjectDatabase('$d/.git/objects', fmt).read(id),
+            throwsA(isA<GitError>().having(
+                (e) => e.message, 'message', contains('size mismatch'))));
+      });
+
+      test('a commit without author reads as git shows it', () {
+        final d = gitRepo(fmt);
+        final tree = cli(['rev-parse', 'HEAD^{tree}'], d).trim();
+        File('$d/c').writeAsStringSync('tree $tree\n\nno author\n');
+        final id =
+            cli(['hash-object', '-t', 'commit', '-w', '--literally', 'c'], d)
+                .trim();
+        final c = ObjectDatabase('$d/.git/objects', fmt).readCommit(id);
+        expect('${c.author.name}|${c.author.email}|${c.message.trimRight()}',
+            cli(['log', '-1', '--format=%an|%ae|%B', id], d).trimRight());
+      });
+
       test('a symbolic ref loop is an error, as in git', () {
         final d = gitRepo(fmt);
         writeFile(d, '.git/refs/heads/a', 'ref: refs/heads/b\n');

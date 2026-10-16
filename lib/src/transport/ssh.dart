@@ -5,7 +5,8 @@ import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart'
     show
-        SSHAuthError,
+        SSHAuthAbortError,
+        SSHAuthFailError,
         SSHClient,
         SSHError,
         SSHHostKey,
@@ -88,10 +89,17 @@ class SshTransport implements Transport {
           unawaited(client.close());
           await identities.dispose();
           if (hostKeyError != null) throw GitError(hostKeyError!);
-          if (e is SSHAuthError) {
+          // Like ssh, report why the agent did not sign.
+          final refusal = identities.refusal;
+          if (refusal != null) throw refusal;
+          if (e is SSHAuthFailError) {
             throw GitError('SSH authentication failed for $username@$host');
           }
-          if (e is SSHError) throw GitError('SSH error: $e');
+          // E.g. the server closed the connection before authentication.
+          if (e is SSHError) {
+            throw GitError(
+                'SSH error: ${e is SSHAuthAbortError ? e.message : e}');
+          }
           rethrow;
         }
       }, options.timeout);
@@ -151,6 +159,9 @@ class _Identities {
     }
   }
 
+  /// Set when the agent refused to sign during authentication.
+  GitError? get refusal => _agent?.refusal;
+
   Future<void> dispose() async => _agent?.close();
 }
 
@@ -160,9 +171,7 @@ class _AgentClient {
     _sub = _socket.listen((d) {
       _buf.add(d);
       _pump();
-    },
-        onError: (Object e) => _fail(e),
-        onDone: () => _fail(GitError('SSH agent closed')));
+    }, onError: _fail, onDone: () => _fail(GitError('SSH agent closed')));
   }
 
   static Future<_AgentClient> connect(String path) async {
@@ -181,6 +190,7 @@ class _AgentClient {
   late final StreamSubscription<Uint8List> _sub;
   final _buf = BytesBuilder();
   final _waiting = <Completer<Uint8List>>[];
+  GitError? refusal;
 
   void _pump() {
     while (_waiting.isNotEmpty) {
@@ -253,7 +263,7 @@ class _AgentClient {
     writeUint32(b, flags);
     final resp = await _request(b.takeBytes());
     if (resp.isEmpty || resp[0] != 14) {
-      throw GitError('SSH agent refused to sign');
+      throw refusal = GitError('SSH agent refused to sign');
     }
     final len = readUint32(resp, 1);
     return SSHRawSignature(Uint8List.fromList(resp.sublist(5, 5 + len)));

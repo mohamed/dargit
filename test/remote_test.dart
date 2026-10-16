@@ -113,6 +113,33 @@ void main() {
           }
         });
 
+        test('a detached or dangling remote HEAD is cloned as git clones it',
+            () async {
+          final bare = seededRemote(fmt);
+          // HEAD detached at a commit no branch has.
+          final detached = cli(
+                  ['commit-tree', 'main^{tree}', '-p', 'main', '-m', 'loose'],
+                  bare)
+              .trim();
+          cli(['update-ref', '--no-deref', 'HEAD', detached], bare);
+          // git ls-remote also lists peeled tags (`^{}`); dartgit does not.
+          expect(await dg.lsRemote(url(bare)), {
+            for (final l
+                in lines(cli([...proto(), 'ls-remote', url(bare)], bare)))
+              if (!l.endsWith('^{}')) l.split('\t')[1]: l.split('\t')[0],
+          });
+          var t = await cloneBoth(bare);
+          await t.expectSame(dg, reason: 'detached');
+          expect(config(t.dgDir), config(t.cliDir));
+          expect(cli(['reflog', '--format=%gs'], t.dgDir),
+              cli(['reflog', '--format=%gs'], t.cliDir));
+          // HEAD on a branch that does not exist: nothing is checked out.
+          cli(['symbolic-ref', 'HEAD', 'refs/heads/none'], bare);
+          t = await cloneBoth(bare);
+          await t.expectSame(dg, reason: 'dangling');
+          expect(config(t.dgDir), config(t.cliDir));
+        });
+
         test('cloning an empty remote, and a missing branch, as git does',
             () async {
           final empty = seededRemote(fmt, empty: true);

@@ -224,25 +224,28 @@ TreeMerge mergeTrees(
         o != null &&
         t != null &&
         [b, o, t].every((e) => e.mode == modeFile || e.mode == modeExec)) {
-      final bd = odb.read(b.id).data,
-          od = odb.read(o.id).data,
-          td = odb.read(t.id).data;
-      String? merged;
+      final String? id;
       if (o.id == t.id) {
-        merged = utf8.decode(od, allowMalformed: true);
-      } else if (!_isBinary(bd) && !_isBinary(od) && !_isBinary(td)) {
-        merged = merge3Text(
-          utf8.decode(bd, allowMalformed: true),
-          utf8.decode(od, allowMalformed: true),
-          utf8.decode(td, allowMalformed: true),
-        );
+        id = o.id; // same content, only the modes differ
+      } else {
+        final bd = odb.read(b.id).data,
+            od = odb.read(o.id).data,
+            td = odb.read(t.id).data;
+        // Merged as bytes, not UTF-8: latin1 maps each byte to one code
+        // unit and back, so any encoding survives.
+        final text = _isBinary(bd) || _isBinary(od) || _isBinary(td)
+            ? null
+            : merge3Text(
+                latin1.decode(bd), latin1.decode(od), latin1.decode(td));
+        id = text == null
+            ? null
+            : odb.write(ObjectType.blob, latin1.encode(text));
       }
-      if (merged == null) {
+      if (id == null) {
         conflicts.add(p);
         continue;
       }
-      final mode = o.mode == b.mode ? t.mode : o.mode;
-      r = TreeEntry(mode, p, odb.write(ObjectType.blob, utf8.encode(merged)));
+      r = TreeEntry(o.mode == b.mode ? t.mode : o.mode, p, id);
     } else {
       conflicts.add(p);
       continue;

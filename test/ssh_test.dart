@@ -88,6 +88,17 @@ void main() {
     if (!hasGit) 'git',
   ];
 
+  test('the agent socket comes from SSH_AUTH_SOCK, like ssh',
+      skip: Platform.environment.containsKey('SSH_AUTH_SOCK')
+          ? 'SSH_AUTH_SOCK is set'
+          : null, () async {
+    await expectLater(
+        goldenGit(credentials: const SshAgent())
+            .lsRemote('ssh://git@127.0.0.1:1/x.git'),
+        throwsA(isA<GitException>().having(
+            (e) => e.message, 'message', contains('SSH_AUTH_SOCK not set'))));
+  });
+
   test('SSH URLs are parsed like git parses them', () {
     final o = TransportOptions(timeout: const Duration(seconds: 1));
     SshTransport ssh(String url) => openTransport(url, o) as SshTransport;
@@ -322,7 +333,7 @@ void main() {
       for (final (keys, fault, message) in [
         (<SSHKeyPair>[], AgentFault.none, 'no keys'),
         (rsa, AgentFault.refuseList, 'refused to list keys'),
-        (rsa, AgentFault.refuseSign, 'authentication failed'),
+        (rsa, AgentFault.refuseSign, 'SSH agent refused to sign'),
         (rsa, AgentFault.hangUp, 'SSH agent closed'),
       ]) {
         final sock = '${Directory.systemTemp.createTempSync('dga').path}/agent';
@@ -365,7 +376,8 @@ void main() {
       });
       await expectLater(
           keyGit('id_rsa').lsRemote('ssh://$_user@127.0.0.1:${s.port}/x.git'),
-          throwsA(isA<GitException>()));
+          throwsA(isA<GitException>().having((e) => e.message, 'message',
+              'SSH error: Connection closed before authentication')));
     });
   });
 }

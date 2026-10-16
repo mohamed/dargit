@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -143,6 +144,7 @@ class Repository {
     cfg.set('core', null, 'repositoryformatversion',
         format == ObjectFormat.sha1 ? '0' : '1');
     cfg.set('core', null, 'filemode', Platform.isWindows ? 'false' : 'true');
+    if (Platform.isWindows) cfg.set('core', null, 'symlinks', 'false');
     cfg.set('core', null, 'bare', bare ? 'true' : 'false');
     if (!bare) cfg.set('core', null, 'logallrefupdates', 'true');
     if (format != ObjectFormat.sha1) {
@@ -212,7 +214,9 @@ class Repository {
   IgnoreRules _loadIgnore() {
     final rules = IgnoreRules();
     final exclude = File(path('info/exclude'));
-    if (exclude.existsSync()) rules.addPatterns('', exclude.readAsStringSync());
+    if (exclude.existsSync()) {
+      rules.addPatterns('', lenient(exclude.readAsBytesSync()));
+    }
     return rules;
   }
 
@@ -237,12 +241,14 @@ class Repository {
     }
     void walk(String rel) {
       final dirPath = rel.isEmpty ? root : joinPath(root, rel);
-      final gi = File(joinPath(dirPath, '.gitignore'));
-      if (gi.existsSync()) {
+      // Like git, a symlinked .gitignore is not followed.
+      final gi = joinPath(dirPath, '.gitignore');
+      if (FileSystemEntity.typeSync(gi, followLinks: false) ==
+          FileSystemEntityType.file) {
         try {
-          rules.addPatterns(rel, gi.readAsStringSync());
+          rules.addPatterns(rel, lenient(File(gi).readAsBytesSync()));
         } on FileSystemException {
-          // Unreadable .gitignore: ignore it.
+          // Unreadable .gitignore: git warns and goes on without it.
         }
       }
       final List<FileSystemEntity> children;
@@ -274,14 +280,11 @@ class Repository {
             continue;
           }
           final stat = e is Link ? FileStat.statSync(e.path) : e.statSync();
-          String mode;
-          if (e is Link && !Platform.isWindows) {
-            mode = modeLink;
-          } else if (!Platform.isWindows && (stat.mode & 0x40) != 0) {
-            mode = modeExec;
-          } else {
-            mode = modeFile;
-          }
+          final mode = e is Link
+              ? modeLink
+              : (stat.mode & 0x40) != 0
+                  ? modeExec
+                  : modeFile;
           out[path] = WorkFile(path, mode, stat);
         }
       }
@@ -299,24 +302,34 @@ class Repository {
         type == FileSystemEntityType.directory) {
       return null;
     }
-    if (type == FileSystemEntityType.link && !Platform.isWindows) {
+    if (type == FileSystemEntityType.link) {
       return utf8Bytes(
           Link(full).targetSync().replaceAll(Platform.pathSeparator, '/'));
     }
     return File(full).readAsBytesSync();
   }
 
-  /// Mode for a working-tree file, honouring the known mode on Windows.
+  bool _flag(String key, {required bool fallback}) =>
+      switch (config.get('core', null, key)?.toLowerCase()) {
+        'true' || 'yes' || 'on' || '1' => true,
+        'false' || 'no' || 'off' || '0' => false,
+        _ => fallback,
+      };
+
+  /// `core.fileMode`: whether the executable bit is trusted.
+  bool get fileMode => _flag('filemode', fallback: !Platform.isWindows);
+
+  /// `core.symlinks`: whether symlinks are checked out as symlinks (else as
+  /// plain files holding the target, as git for Windows does).
+  bool get symlinks => _flag('symlinks', fallback: !Platform.isWindows);
+
+  /// Mode for a working-tree file given the mode the index or HEAD knows,
+  /// like git with `core.fileMode` and `core.symlinks`.
   String modeFor(WorkFile f, String? knownMode) {
-    if (f.mode == modeGitlink) return modeGitlink;
-    if (Platform.isWindows) {
-      return knownMode == modeExec || knownMode == modeLink
-          ? knownMode!
-          : modeFile;
-    }
-    if (config.get('core', null, 'filemode') == 'false' && f.mode != modeLink) {
-      return knownMode == modeExec ? modeExec : modeFile;
-    }
+    if (f.mode == modeGitlink || f.mode == modeLink) return f.mode;
+    // A plain file standing for a symlink.
+    if (knownMode == modeLink && !symlinks) return modeLink;
+    if (!fileMode) return knownMode == modeExec ? modeExec : modeFile;
     return f.mode;
   }
 
@@ -383,11 +396,8 @@ class Repository {
           mode: int.parse(mode, radix: 8),
           size: target?.length ?? 0);
     }
-    final stat = FileStat.statSync(full);
-    if (stat.type == FileSystemEntityType.notFound) {
-      return IndexEntry(path: path, id: id, mode: int.parse(mode, radix: 8));
-    }
-    return IndexEntry.fromStat(path, id, int.parse(mode, radix: 8), stat);
+    return IndexEntry.fromStat(
+        path, id, int.parse(mode, radix: 8), FileStat.statSync(full));
   }
 
   /// Rewrites the working tree from [from] to [to] (both flat trees) and
@@ -467,12 +477,13 @@ class Repository {
       return;
     }
     final data = odb.read(e.id).data;
-    if (e.mode == modeLink && !Platform.isWindows) {
-      Link(full).createSync(String.fromCharCodes(data));
+    if (e.mode == modeLink && symlinks) {
+      Link(full).createSync(utf8.decode(data, allowMalformed: true));
       return;
     }
     File(full).writeAsBytesSync(data);
-    if (e.mode == modeExec && !Platform.isWindows) {
+    // Like git, also with core.fileMode=false.
+    if (e.mode == modeExec) {
       try {
         Process.runSync('chmod', ['+x', full]);
       } on ProcessException {

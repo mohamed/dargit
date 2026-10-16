@@ -200,6 +200,21 @@ void main() {
           contains('smart HTTP'));
     });
 
+    test('push to a repository the server does not have', () async {
+      final url = await fakeServer((r) async {
+        r.response.statusCode = 404;
+        await r.response.close();
+      });
+      final d = gitRepo(ObjectFormat.sha1);
+      cli(['remote', 'add', 'origin', url], d);
+      expect((await runGitAsync(['push', 'origin', 'main'], d)).exitCode,
+          isNot(0));
+      await expectLater(
+          g.push(d, 'main'),
+          throwsA(isA<GitException>()
+              .having((e) => e.message, 'message', contains('not found'))));
+    });
+
     test('bad advertisements', () async {
       Future<String> advertising(String body) => fakeServer((r) async {
             r.response.headers.contentType = ContentType.parse(

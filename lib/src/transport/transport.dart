@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -26,6 +25,9 @@ abstract class UploadSession {
 
   /// Target of the remote HEAD if advertised (e.g. `refs/heads/main`).
   String? get head;
+
+  /// The commit the remote HEAD points at, also when it is detached.
+  String? get headId;
 
   /// The remote repository's object format.
   ObjectFormat get format;
@@ -135,6 +137,7 @@ class Advertisement {
   final refs = <String, String>{};
   final caps = <String>{};
   String? head;
+  String? headId;
 
   /// From the `object-format` capability; servers that do not send it
   /// only speak SHA-1.
@@ -192,7 +195,7 @@ Future<Advertisement> readAdvertisement(PktReader r) async {
       }
     }
   }
-  ad.refs.remove('HEAD');
+  ad.headId = ad.refs.remove('HEAD');
   return ad;
 }
 
@@ -220,6 +223,8 @@ class SmartUploadSession implements UploadSession {
   ObjectFormat get format => _ad.format;
   @override
   String? get head => _ad.head;
+  @override
+  String? get headId => _ad.headId;
 
   @override
   Future<Uint8List> fetchPack(List<String> wants, List<String> haves) async {
@@ -390,6 +395,3 @@ class StreamChannel implements SmartChannel {
 }
 
 String shellQuote(String s) => "'${s.replaceAll("'", r"'\''")}'";
-
-/// Decodes bytes leniently for error messages.
-String lenient(List<int> b) => utf8.decode(b, allowMalformed: true);

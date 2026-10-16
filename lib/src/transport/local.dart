@@ -51,6 +51,9 @@ class _LocalUpload implements UploadSession {
   String? get head => _repo.refs.symbolicTarget('HEAD');
 
   @override
+  String? get headId => _repo.headCommit;
+
+  @override
   Future<Uint8List> fetchPack(List<String> wants, List<String> haves) async {
     for (final w in wants) {
       if (!_repo.odb.has(w)) throw GitError('remote error: not our ref $w');

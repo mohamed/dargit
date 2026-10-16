@@ -32,6 +32,12 @@ List<String> _pktLines(Uint8List b) {
   return out;
 }
 
+/// [bytes] as a stream of small chunks, as a network delivers them.
+Stream<List<int>> chunked(List<int> bytes) => Stream.fromIterable([
+      for (var i = 0; i < bytes.length; i += 1000)
+        bytes.sublist(i, i + 1000 > bytes.length ? bytes.length : i + 1000),
+    ]);
+
 /// A [SmartChannel] running git's service in [dir] for each request, with
 /// the advertised capabilities filtered through [caps].
 class GitChannel implements SmartChannel {
@@ -59,12 +65,12 @@ class GitChannel implements SmartChannel {
       out.add(pkt(l));
     }
     out.add(flushPkt);
-    return PktReader(Stream.value(out.takeBytes()));
+    return PktReader(chunked(out.takeBytes()));
   }
 
   @override
   Future<PktReader> request(String service, Uint8List body) async =>
-      PktReader(Stream.value(await cliBytes(
+      PktReader(chunked(await cliBytes(
           [service.substring(4), '--stateless-rpc', dir], dir,
           input: body)));
 
@@ -79,7 +85,7 @@ class ScriptedChannel extends GitChannel {
 
   @override
   Future<PktReader> request(String service, Uint8List body) async =>
-      PktReader(Stream.value(response));
+      PktReader(chunked(response));
 }
 
 Iterable<String> Function(List<String>) without(List<String> drop) =>
@@ -146,6 +152,7 @@ void main() {
           ...pktBytes([9]),
         ], 'bad side-band 9');
         await fails(ascii.encode('00'), 'unexpected end of stream');
+        await fails(ascii.encode('0010NAK'), 'unexpected end of stream');
         await fails([], 'unexpected end of stream', drop: ['side-band']);
         await fails(ascii.encode('zzzz'), 'bad pkt-line header');
         await fails(pkt('ERR denied\n'), 'remote error: denied');

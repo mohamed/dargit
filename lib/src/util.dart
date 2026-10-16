@@ -113,3 +113,6 @@ String joinPath(String dir, String rel) {
   if (dir.endsWith(sep)) return '$dir$r';
   return '$dir$sep$r';
 }
+
+/// UTF-8 text from bytes that may not be valid UTF-8.
+String lenient(List<int> b) => utf8.decode(b, allowMalformed: true);

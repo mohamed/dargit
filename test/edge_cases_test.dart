@@ -97,6 +97,39 @@ void main() {
         await expectStatusLikeGit(dg, d);
       });
 
+      test(
+          'core.symlinks=false checks out links as files, like git for Windows',
+          () async {
+        final d = gitRepo(fmt);
+        Link('$d/link').createSync('a.md');
+        writeFile(d, 'run.sh', 'echo\n');
+        Process.runSync('chmod', ['+x', '$d/run.sh']);
+        cli(['add', '-A'], d);
+        cli(['commit', '-q', '-m', 'link'], d);
+        final root = tempDir('nosymlinks');
+        final t = Twin('$root/cli', '$root/dg');
+        cli(['clone', '-q', d, t.cliDir], root);
+        await dg.clone(d, t.dgDir);
+        t.both(['config', 'core.symlinks', 'false']);
+        t.both(['config', 'core.fileMode', 'false']);
+        t.delete('link');
+        t.delete('run.sh');
+        cli(['reset', '-q', '--hard'], t.cliDir);
+        await dg.resetHard(t.dgDir, 'HEAD');
+        await t.expectSame(dg);
+        for (final dir in t.dirs) {
+          expect(FileSystemEntity.isLinkSync('$dir/link'), isFalse);
+          expect(readFile(dir, 'link'), 'a.md');
+        }
+        // Editing the file retargets the link; the modes stay.
+        t.write('link', 'run.sh');
+        await t.expectSame(dg);
+        cli(['commit', '-q', '-am', 'retarget'], t.cliDir);
+        await dg.commit(t.dgDir, 'retarget', only: ['link', 'run.sh']);
+        await t.expectSame(dg);
+        expect(cli(['ls-tree', 'HEAD'], t.dgDir), contains('120000 blob'));
+      });
+
       test('submodule entries (gitlinks) are kept and checked out as git does',
           () async {
         final d = gitRepo(fmt);
@@ -389,6 +422,70 @@ void main() {
         await expectStatusLikeGit(dg, d);
       });
 
+      test('reset --hard removes untracked files in the way, like git',
+          () async {
+        final t = await Twin.init(dg, fmt);
+        t.write('x/inside.md', 'dir\n');
+        cli(['add', '-A'], t.cliDir);
+        cli(['commit', '-q', '-m', 'dir'], t.cliDir);
+        await dg.add(t.dgDir, ['.']);
+        await dg.commit(t.dgDir, 'dir');
+        final dir = cliRevParse(t.cliDir, 'HEAD')!;
+        t.delete('x');
+        t.write('x', 'file\n');
+        cli(['add', '-A'], t.cliDir);
+        cli(['commit', '-q', '-m', 'file'], t.cliDir);
+        await dg.add(t.dgDir, ['.']);
+        await dg.commit(t.dgDir, 'file');
+        final file = cliRevParse(t.cliDir, 'HEAD')!;
+        await t.expectSame(dg);
+        // An untracked file inside the directory that becomes a file.
+        cli(['reset', '-q', '--hard', dir], t.cliDir);
+        await dg.resetHard(t.dgDir, dir);
+        t.write('x/untracked', 'u\n');
+        cli(['reset', '-q', '--hard', file], t.cliDir);
+        await dg.resetHard(t.dgDir, file);
+        await t.expectSame(dg);
+        // An untracked file where a directory is needed.
+        t.delete('x');
+        t.write('x', 'untracked\n');
+        cli(['reset', '-q', '--hard', dir], t.cliDir);
+        await dg.resetHard(t.dgDir, dir);
+        await t.expectSame(dg);
+      });
+
+      test('.gitignore files are read as git reads them', () async {
+        final d = gitRepo(fmt);
+        // Not followed when it is a symlink.
+        writeFile(d, 'patterns', 'ignored\n');
+        Link('$d/.gitignore').createSync('patterns');
+        writeFile(d, 'ignored', '');
+        await expectStatusLikeGit(dg, d);
+        // Bytes that are not UTF-8 do not void the file.
+        File('$d/.gitignore').deleteSync();
+        File('$d/.gitignore').writeAsBytesSync([
+          ...'# caf'.codeUnits, 0xe9, 10, // Latin-1 comment
+          ...'ignored\n'.codeUnits,
+        ]);
+        await expectStatusLikeGit(dg, d);
+      });
+
+      test('a broken index is an error, as in git', () async {
+        final d = gitRepo(fmt);
+        File('$d/.git/index').writeAsStringSync('garbage');
+        expect(runGit(['status'], d).exitCode, isNot(0));
+        await expectLater(
+            dg.status(d),
+            throwsA(isA<GitException>().having(
+                (e) => e.message, 'message', contains('invalid index'))));
+        // An index that cannot be replaced leaves no lock behind.
+        File('$d/.git/index').deleteSync();
+        writeFile(d, '.git/index/in-the-way', '');
+        expect(runGit(['add', '-A'], d).exitCode, isNot(0));
+        await expectLater(dg.add(d, ['.']), throwsA(isA<GitException>()));
+        expect(File('$d/.git/index.lock').existsSync(), isFalse);
+      });
+
       test('rebase refuses what git rebase refuses', () async {
         final d = gitRepo(fmt);
         cli(['branch', 'up'], d);
@@ -404,6 +501,14 @@ void main() {
         cli(['init', '-q', '--object-format=${fmt.name}', unborn], unborn);
         await expectLater(
             dg.rebase(unborn, 'HEAD'), throwsA(isA<GitException>()));
+        // An orphan branch has nothing to rebase.
+        cli(['reset', '-q', '--hard'], d);
+        cli(['checkout', '-q', '--orphan', 'orphan'], d);
+        expect(runGit(['rebase', 'main'], d).exitCode, isNot(0));
+        await expectLater(
+            dg.rebase(d, 'main'),
+            throwsA(isA<GitException>()
+                .having((e) => e.message, 'message', contains('unborn'))));
       });
 
       test('rebasing an unrelated history replays its root commit like git',

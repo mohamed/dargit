@@ -8,6 +8,7 @@ import 'package:dartgit/src/merge.dart';
 import 'package:dartgit/src/objects.dart';
 import 'package:test/test.dart';
 
+import 'golden.dart';
 import 'helpers.dart';
 
 /// `git merge-file -p ours base theirs`: the merged text, or null when git
@@ -92,6 +93,75 @@ void main() {
             reason: 'base ${jsonEncode(b)} ours ${jsonEncode(o)} '
                 'theirs ${jsonEncode(t)}');
       }
+    });
+
+    test('files too different to diff', () {
+      final dir = tempDir('merge');
+      String text(String p) =>
+          List.generate(2500, (i) => '$p line $i\n').join();
+      final b = text('base'), o = text('ours'), t = text('theirs');
+      for (final (ours, theirs) in [(o, b), (b, t), (o, t)]) {
+        expect(merge3Text(b, ours, theirs), gitMergeFile(dir, b, ours, theirs));
+      }
+    });
+  });
+
+  group('mergeTrees agrees with git merge-tree', skip: skipNoGit, () {
+    /// Commits [base], then [ours] and [theirs] on two branches (files as
+    /// bytes; a name ending in `*` is executable), and returns git's merged
+    /// tree (`ls-tree -r`) next to dartgit's.
+    (String, String) both(Map<String, List<int>> base,
+        Map<String, List<int>> ours, Map<String, List<int>> theirs) {
+      final d = tempDir('mergetree');
+      cli(['init', '-q', '-b', 'main'], d);
+      void commit(Map<String, List<int>> files, String msg) {
+        cli(['rm', '-rq', '--cached', '--ignore-unmatch', '.'], d);
+        files.forEach((name, bytes) {
+          final exec = name.endsWith('*');
+          final path = exec ? name.substring(0, name.length - 1) : name;
+          File('$d/$path').writeAsBytesSync(bytes);
+          cli(['add', path], d);
+          if (exec) cli(['update-index', '--chmod=+x', path], d);
+        });
+        cli(['commit', '-q', '--allow-empty', '-m', msg], d);
+      }
+
+      commit(base, 'base');
+      cli(['branch', 'theirs'], d);
+      commit(ours, 'ours');
+      cli(['checkout', '-qf', 'theirs'], d);
+      commit(theirs, 'theirs');
+      final tree =
+          lines(cli(['merge-tree', '--write-tree', 'main', 'theirs'], d)).first;
+      final db = ObjectDatabase('$d/.git/objects');
+      Map<String, TreeEntry> flat(String rev) =>
+          db.flattenTree(cli(['rev-parse', '$rev^{tree}'], d).trim());
+      final m = mergeTrees(db, flat('main~1'), flat('main'), flat('theirs'));
+      expect(m.conflicts, isEmpty);
+      final mine = [
+        for (final MapEntry(:key, :value) in m.tree.entries)
+          '${value.mode} blob ${value.id}\t$key',
+      ]..sort();
+      return (cli(['ls-tree', '-r', tree], d).trimRight(), mine.join('\n'));
+    }
+
+    test('text that is not UTF-8 is merged byte for byte', () {
+      List<int> latin1(String s) => s.codeUnits;
+      final (git, dg) = both(
+        {'notes.txt': latin1('caf\xe9\n2\n3\n4\n5\n')},
+        {'notes.txt': latin1('caf\xe9 cr\xe8me\n2\n3\n4\n5\n')},
+        {'notes.txt': latin1('caf\xe9\n2\n3\n4\nna\xefve\n')},
+      );
+      expect(dg, git);
+    });
+
+    test('the same content with different modes', () {
+      final (git, dg) = both(
+        {'run.sh': utf8.encode('old\n')},
+        {'run.sh*': utf8.encode('new\n')},
+        {'run.sh': utf8.encode('new\n')},
+      );
+      expect(dg, git);
     });
   });
 
