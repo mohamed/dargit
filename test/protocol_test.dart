@@ -317,8 +317,10 @@ void main() {
       final id = cliRevParse(d, 'HEAD')!;
       final f =
           File('$d/.git/objects/${id.substring(0, 2)}/${id.substring(2)}');
+      // git writes objects read-only: replace the file, as only root could
+      // write to it.
       f
-        ..setLastModifiedSync(DateTime.now())
+        ..deleteSync()
         ..writeAsBytesSync([0x78, 0x9c, 0xff, 0xff, 0xff]);
       expect(runGit(['log'], d).exitCode, isNot(0));
       await expectLater(
