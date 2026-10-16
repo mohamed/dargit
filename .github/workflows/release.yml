@@ -1,0 +1,62 @@
+name: Release
+
+# Push a version tag to release, e.g.:
+#   git tag v0.1.0 && git push origin v0.1.0
+# The tag must match `version:` in pubspec.yaml, `dargitVersion` in
+# lib/src/transport/transport.dart and a `## <version>` CHANGELOG entry.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+
+permissions:
+  contents: write # create the release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - run: dart pub get
+
+      - name: Check versions
+        id: version
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          pubspec=$(sed -n 's/^version: *//p' pubspec.yaml)
+          code=$(sed -n "s/^const dargitVersion = '\(.*\)';/\1/p" lib/src/transport/transport.dart)
+          echo "tag $version, pubspec $pubspec, dargitVersion $code"
+          [ "$version" = "$pubspec" ] || { echo "::error::tag does not match pubspec.yaml"; exit 1; }
+          [ "$version" = "$code" ] || { echo "::error::tag does not match dargitVersion"; exit 1; }
+          # The CHANGELOG entry becomes the release notes.
+          awk -v v="$version" '
+            $0 == "## " v { on = 1; next }
+            /^## / && on { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "::error::no '## $version' entry in CHANGELOG.md"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - run: dart format --output=none --set-exit-if-changed .
+      - run: dart analyze --fatal-infos
+      - run: dart test
+      - name: Validate the package as pub.dev would
+        run: dart pub publish --dry-run
+
+      - name: Build the package archive
+        run: |
+          name=dargit-${{ steps.version.outputs.version }}
+          git archive --format=tar.gz --prefix="$name/" -o "$name.tar.gz" "$GITHUB_REF_NAME"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "dargit-$VERSION.tar.gz" "dargit-$VERSION.tar.gz.sha256" \
+            --title "dargit $VERSION" --notes-file notes.md \
+            $(case "$VERSION" in *-*) echo --prerelease;; esac)

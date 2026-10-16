@@ -1,0 +1,33 @@
+name: dargit
+description: >-
+  Git in pure Dart with an API that mirrors git commands: commit, status, log, clone, fetch, push and rebase over local, HTTPS and SSH remotes; SHA-1 and SHA-256.
+version: 0.1.0
+homepage: https://github.com/mohamed/dargit
+repository: https://github.com/mohamed/dargit
+issue_tracker: https://github.com/mohamed/dargit/issues
+topics:
+  - git
+  - vcs
+  - version-control
+  - ssh
+  - flutter
+
+# dart:io (files, sockets, processes) is required: no web.
+platforms:
+  android:
+  ios:
+  linux:
+  macos:
+  windows:
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  crypto: ^3.0.6
+  dartssh2: ^4.1.0
+
+dev_dependencies:
+  coverage: ^1.16.0
+  lints: ^6.0.0
+  test: ^1.25.0

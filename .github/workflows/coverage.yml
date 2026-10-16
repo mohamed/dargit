@@ -1,0 +1,44 @@
+name: Coverage
+
+# Run by hand: Actions → Coverage → Run workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      min:
+        description: Minimum line coverage (percent) for the run to pass
+        default: '100'
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - run: dart pub get
+      # sshd for the SSH tests; the script itself runs as root so that it
+      # can use chattr +a and switch to nobody (see tool/coverage.sh).
+      - run: sudo apt-get update && sudo apt-get install -y openssh-server
+      - run: sudo mkdir -p /run/sshd
+      - name: tool/coverage.sh
+        env:
+          MIN: ${{ inputs.min }}
+        run: |
+          status=0
+          sudo env "PATH=$PATH" "HOME=$HOME" "PUB_CACHE=${PUB_CACHE:-$HOME/.pub-cache}" \
+            tool/coverage.sh "--min=$MIN" 2>&1 | tee coverage.log || status=$?
+          {
+            echo '## Line coverage'
+            echo '```'
+            sed -n '/^== merged/,$p' coverage.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+        shell: bash -o pipefail {0}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lcov
+          path: coverage/lcov.info
+          if-no-files-found: ignore

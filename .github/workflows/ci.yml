@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - run: dart pub get
+      - run: dart format --output=none --set-exit-if-changed .
+      - run: dart analyze --fatal-infos
+      - run: dart test
+      # SSH transport against a throwaway local sshd the tests start.
+      - run: sudo apt-get update && sudo apt-get install -y openssh-server
+      - run: sudo mkdir -p /run/sshd
+      - run: dart test --run-skipped -t ssh

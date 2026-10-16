@@ -1,0 +1,5 @@
+tags:
+  network:
+    skip: "Needs internet access; run with: dart test --run-skipped -t network"
+  ssh:
+    skip: "Needs a local sshd; run with: dart test --run-skipped -t ssh"
