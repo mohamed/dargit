@@ -234,10 +234,9 @@ void main() {
     });
 
     test('a connection refused is a network error', () async {
-      final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-      final port = s.port;
-      await s.close();
-      await fails('http://127.0.0.1:$port/x.git', contains('network error'));
+      // Port 1 (tcpmux) is privileged and unused, so nothing answers; a
+      // just-closed ephemeral port could be taken by a parallel test.
+      await fails('http://127.0.0.1:1/x.git', contains('network error'));
     });
   });
 

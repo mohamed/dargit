@@ -448,10 +448,21 @@ void main() {
         await t.expectSame(dg);
         // An untracked file where a directory is needed.
         t.delete('x');
+        cli(['commit', '-q', '-am', 'none'], t.cliDir);
+        await dg.commit(t.dgDir, 'none', only: ['x']);
+        await t.expectSame(dg);
         t.write('x', 'untracked\n');
         cli(['reset', '-q', '--hard', dir], t.cliDir);
         await dg.resetHard(t.dgDir, dir);
         await t.expectSame(dg);
+      });
+
+      test('tracked files below a symlinked directory are deleted, as in git',
+          () async {
+        final d = gitRepo(fmt, files: {'a/b.md': 'b\n', 'other/b.md': 'o\n'});
+        Directory('$d/a').deleteSync(recursive: true);
+        Link('$d/a').createSync('other');
+        await expectStatusLikeGit(dg, d);
       });
 
       test('.gitignore files are read as git reads them', () async {

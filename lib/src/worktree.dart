@@ -94,9 +94,21 @@ List<StatusEntry> status(Repository repo) {
   final head = repo.treeOfCommit(repo.headCommit);
   final index = repo.readIndex();
   final staged = _indexTree(index);
-  final work = repo.worktreeTree(index, head, write: false);
+  final files = repo.scanWorktree(index, head);
+  // Tracked files are hashed; untracked ones are only listed, as in git.
+  final work = repo.worktreeTree(index, head, write: false, files: files);
+  final untracked = {
+    for (final p in files.keys)
+      if (!work.containsKey(p)) p,
+  };
   final unmerged = {for (final c in index.conflicts) c.path};
-  final paths = {...head.keys, ...staged.keys, ...work.keys, ...unmerged};
+  final paths = {
+    ...head.keys,
+    ...staged.keys,
+    ...work.keys,
+    ...untracked,
+    ...unmerged
+  };
   final out = <StatusEntry>[];
   for (final p in paths) {
     if (unmerged.contains(p)) {
@@ -105,7 +117,7 @@ List<StatusEntry> status(Repository repo) {
     }
     final h = head[p], i = staged[p], w = work[p];
     if (i == null && h == null) {
-      if (w != null) out.add(StatusEntry(p, '?', '?'));
+      if (untracked.contains(p)) out.add(StatusEntry(p, '?', '?'));
       continue;
     }
     final x = i == null
@@ -221,19 +233,13 @@ String? commit(Repository repo, String message,
 
 /// `git reset --hard <commit>`: moves the current branch (or detached HEAD)
 /// to [target] and makes index and working tree match it, discarding
-/// changes to tracked files. Untracked files are left alone.
+/// changes to tracked files. Untracked files are left alone unless they
+/// are in the way of a path of [target], as in git.
 void resetHard(Repository repo, String target,
     {required String reflogMessage}) {
   final head = repo.treeOfCommit(repo.headCommit);
-  final index = repo.readIndex();
   // What is on disk now for every tracked path.
-  final current =
-      repo.worktreeTree(index, head, write: false, includeUntracked: false);
-  final tracked = {...head.keys, ...index.entries.keys};
-  final from = <String, TreeEntry>{
-    for (final p in tracked)
-      if (current[p] != null) p: current[p]!,
-  };
-  repo.checkout(from, repo.treeOfCommit(target));
+  final current = repo.worktreeTree(repo.readIndex(), head, write: false);
+  repo.checkout(current, repo.treeOfCommit(target));
   repo.updateRef(repo.headRef ?? 'HEAD', target, reflogMessage);
 }

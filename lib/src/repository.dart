@@ -279,19 +279,54 @@ class Repository {
           if (!tracked.contains(path) && rules.isIgnored(path, isDir: false)) {
             continue;
           }
-          final stat = e is Link ? FileStat.statSync(e.path) : e.statSync();
-          final mode = e is Link
-              ? modeLink
-              : (stat.mode & 0x40) != 0
-                  ? modeExec
-                  : modeFile;
-          out[path] = WorkFile(path, mode, stat);
+          out[path] = _workFile(path, e.path, isLink: e is Link);
         }
       }
     }
 
     walk('');
+    // Like git, tracked paths are also looked up one by one (lstat), so
+    // they are found where a directory cannot be listed.
+    for (final p in tracked) {
+      if (!out.containsKey(p)) {
+        final f = _trackedFileAt(p, gitlink: isGitlink(p));
+        if (f != null) out[p] = f;
+      }
+    }
     return out;
+  }
+
+  WorkFile _workFile(String path, String full, {required bool isLink}) {
+    final stat = FileStat.statSync(full);
+    return WorkFile(
+        path,
+        isLink
+            ? modeLink
+            : (stat.mode & 0x40) != 0
+                ? modeExec
+                : modeFile,
+        stat);
+  }
+
+  /// The tracked [path] on disk, unless it is missing or below a symlink
+  /// (git's `has_symlink_leading_path`).
+  WorkFile? _trackedFileAt(String path, {required bool gitlink}) {
+    final parts = path.split('/');
+    for (var i = 1; i < parts.length; i++) {
+      final dir = joinPath(_work, parts.sublist(0, i).join('/'));
+      if (FileSystemEntity.typeSync(dir, followLinks: false) !=
+          FileSystemEntityType.directory) {
+        return null;
+      }
+    }
+    final full = joinPath(_work, path);
+    return switch (FileSystemEntity.typeSync(full, followLinks: false)) {
+      FileSystemEntityType.file => _workFile(path, full, isLink: false),
+      FileSystemEntityType.link => _workFile(path, full, isLink: true),
+      FileSystemEntityType.directory when gitlink =>
+        WorkFile(path, modeGitlink, FileStat.statSync(full)),
+      _ => null,
+    };
   }
 
   /// Content of the working-tree file at [path] as Git would store it.
@@ -358,21 +393,18 @@ class Repository {
         : hashObject(ObjectType.blob, data, format);
   }
 
-  /// Flat tree describing the working tree: tracked files plus untracked,
-  /// non-ignored files.
+  /// Flat tree of the tracked paths (in [index] or [head]) as they are on
+  /// disk, from [files] (default: a new [scanWorktree]).
   Map<String, TreeEntry> worktreeTree(
     GitIndex index,
     Map<String, TreeEntry> head, {
     required bool write,
-    bool includeUntracked = true,
+    Map<String, WorkFile>? files,
   }) {
-    final tracked = {...index.entries.keys, ...head.keys};
-    final files = scanWorktree(index, head);
     final out = <String, TreeEntry>{};
-    for (final f in files.values) {
-      final isTracked = tracked.contains(f.path);
-      if (!isTracked) {
-        if (!includeUntracked) continue;
+    for (final f in (files ?? scanWorktree(index, head)).values) {
+      if (!index.entries.containsKey(f.path) && !head.containsKey(f.path)) {
+        continue;
       }
       final known = index.entries[f.path]?.modeString ?? head[f.path]?.mode;
       final mode = modeFor(f, known);
@@ -497,8 +529,7 @@ class Repository {
     while (i > 0) {
       final dir = Directory(joinPath(_work, path.substring(0, i)));
       try {
-        if (dir.listSync().isNotEmpty) return;
-        dir.deleteSync();
+        dir.deleteSync(); // rmdir, as git: fails unless empty
       } on FileSystemException {
         return;
       }

@@ -297,11 +297,9 @@ void main() {
               credentials: const SshAgent(socketPath: '/nonexistent/agent'),
               verifyHostKey: pinTo(known)),
           'SSH agent');
-      final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-      final closed = s.port;
-      await s.close();
+      // Port 1: nothing listens there (see http_test).
       await expectLater(
-          keyGit('id_rsa').lsRemote('ssh://$_user@127.0.0.1:$closed/x.git'),
+          keyGit('id_rsa').lsRemote('ssh://$_user@127.0.0.1:1/x.git'),
           throwsA(isA<GitException>().having(
               (e) => e.message, 'message', contains('cannot connect'))));
       // The remote command fails: no such repository.

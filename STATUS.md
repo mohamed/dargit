@@ -13,8 +13,8 @@
   to GitMarker; reflogs written; BSD-3-Clause licence.
 - [x] 8. SHA-256 repositories (`extensions.objectFormat`), next to SHA-1.
 - [x] 9. Tests use the git CLI as the golden reference; line coverage
-  98.9% (`dart run coverage:test_with_coverage -- --run-skipped -x network`,
-  with sshd installed).
+  100% (`tool/coverage.sh`: full suite with sshd, plus the environment
+  tests as `nobody` and without `chmod`).
 
 ## Layout
 
@@ -72,6 +72,10 @@
 - Smart protocol v0; capabilities side-band-64k, ofs-delta, report-status,
   delete-refs; no multi_ack: up to 32 first-parent ancestors of each tip
   are sent as `have`s, then `done`.
+- Windows: `core.fileMode` and `core.symlinks` (unset: false on Windows,
+  true elsewhere) decide, as in git; `init` on Windows writes both false.
+- Without `chmod(1)` (dartgit has no chmod(2)), executables are checked
+  out without the bit and show as modified, where git sets it.
 - Identity: `authorName`/`authorEmail`, else `user.name`/`user.email` of the
   repository config (global config is not read).
 - SSH user: from the URL, else `$USER`. Host keys: `HostKeyVerifier`
@@ -106,7 +110,11 @@ HEAD, refs, `ls-files -s`, `status --porcelain`, log, reflog,
 - `storage_test`: packs written by git (ofs/ref deltas, 64-bit offsets,
   thin packs), `.idx` byte-identical to `git index-pack`, packed refs,
   config values in both directions.
-- `merge_test`: the line merge against `git merge-file` (1000 random cases).
+- `merge_test`: the line merge against `git merge-file` (1000 random
+  cases) and tree merges against `git merge-tree --write-tree`.
+- `environment_test`: an append-only directory (`chattr +a`), unreadable
+  files and directories (as a non-root user), no `chmod`. These skip
+  themselves at run time elsewhere, also under `--run-skipped`.
 - `-t network`: public HTTPS clone. `-t ssh`: throwaway OpenSSH sshd with
   generated keys and test agents; runs in CI.
 
@@ -117,7 +125,14 @@ merge conflict rule (touching hunks conflict, like xdiff), clone/fetch
 reflog and config, `clone -b` of an empty remote fails like git, linked
 worktrees (`commondir`), gitlinks in status/add, deleting symlinks during
 checkout, wildmatch bracket expressions, deleting packed refs in SHA-256
-repositories, quoted whitespace and legacy `[section.sub]` in config.
+repositories, quoted whitespace and legacy `[section.sub]` in config,
+detached and dangling remote HEADs in clone and ls-remote, non-UTF-8 text
+in merges (corrupted before), symlinked or non-UTF-8 `.gitignore`,
+`core.symlinks=false`, tracked files found by lstat (not by listing
+directories, so unreadable directories and symlinked parents behave as
+in git), untracked files not hashed by status, emptied directories
+removed with rmdir, SSH errors (aborted connection vs. rejected keys,
+agent refusing to sign).
 
 ## Known limitations / ideas
 

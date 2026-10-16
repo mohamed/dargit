@@ -34,8 +34,8 @@ List<String> _pktLines(Uint8List b) {
 
 /// [bytes] as a stream of small chunks, as a network delivers them.
 Stream<List<int>> chunked(List<int> bytes) => Stream.fromIterable([
-      for (var i = 0; i < bytes.length; i += 1000)
-        bytes.sublist(i, i + 1000 > bytes.length ? bytes.length : i + 1000),
+      for (var i = 0; i < bytes.length; i += 64)
+        bytes.sublist(i, i + 64 > bytes.length ? bytes.length : i + 64),
     ]);
 
 /// A [SmartChannel] running git's service in [dir] for each request, with

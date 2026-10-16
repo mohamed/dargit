@@ -127,10 +127,16 @@ dart analyze --fatal-infos
 dart test                                # golden tests against the git CLI
 dart test --run-skipped -t network       # clones a public repository over HTTPS
 dart test --run-skipped -t ssh           # needs sshd and ssh-keygen (openssh-server)
-dart run coverage:test_with_coverage -- --run-skipped -x network   # coverage/lcov.info
+tool/coverage.sh --min=100                # line coverage, see below
 ```
 
 Golden tests need the `git` CLI and are skipped when it is not installed.
+
+`tool/coverage.sh` writes `coverage/lcov.info` from three runs: the whole
+suite (with sshd for the SSH tests), `test/environment_test.dart` as the
+unprivileged user `nobody` (unreadable files; needs root and `runuser`)
+and again with no `chmod` on `PATH`. Coverage is 100% of `lib/` lines
+when all three run.
 
 ## Dependencies and licences
 
