@@ -51,7 +51,7 @@ class _HttpChannel implements SmartChannel {
   }
 
   final TransportOptions options;
-  late final String _base;
+  late String _base;
   late final HttpClient _client;
   String? _authHeader;
 

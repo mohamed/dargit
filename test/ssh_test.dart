@@ -7,6 +7,7 @@ import 'package:dartgit/src/transport/transport.dart';
 import 'package:dartssh2/dartssh2.dart' show SSHKeyPair;
 import 'package:test/test.dart';
 
+import 'golden.dart';
 import 'helpers.dart';
 import 'ssh_agent_server.dart';
 
@@ -83,22 +84,25 @@ void main() {
   final missing = [
     if (_which('sshd') == null) 'sshd',
     if (_which('ssh-keygen') == null) 'ssh-keygen',
+    if (_which('ssh') == null) 'ssh',
     if (!hasGit) 'git',
   ];
 
-  test('SSH URL parsing', () {
+  test('SSH URLs are parsed like git parses them', () {
     final o = TransportOptions(timeout: const Duration(seconds: 1));
-    final scp = openTransport('git@github.com:me/notes.git', o) as SshTransport;
-    expect([scp.user, scp.host, scp.port, scp.path],
-        ['git', 'github.com', 22, 'me/notes.git']);
-    final url = openTransport('ssh://bob@example.org:2222/srv/notes.git', o)
-        as SshTransport;
+    SshTransport ssh(String url) => openTransport(url, o) as SshTransport;
+    final scp = ssh('git@github.com:me/notes.git');
+    expect([scp.user, scp.host, scp.port, scp.path, scp.hostKeyName],
+        ['git', 'github.com', 22, 'me/notes.git', 'github.com']);
+    final url = ssh('ssh://bob@example.org:2222/srv/notes.git');
     expect([url.user, url.host, url.port, url.path],
         ['bob', 'example.org', 2222, '/srv/notes.git']);
     expect(url.hostKeyName, '[example.org]:2222');
-    final home =
-        openTransport('ssh://example.org/~/notes.git', o) as SshTransport;
+    final home = ssh('ssh://example.org/~/notes.git');
     expect([home.user, home.path], [null, '~/notes.git']);
+    expect(ssh('git+ssh://me@h/x').user, 'me');
+    expect(ssh('host:relative/path').path, 'relative/path');
+    expect(shellQuote("it's"), "'it'\\''s'");
   });
 
   group('against a local sshd',
@@ -106,7 +110,7 @@ void main() {
       skip: missing.isEmpty ? null : 'missing ${missing.join(', ')}', () {
     Sshd? server;
     int port() => server!.port;
-    late String keys, remote, remote256, known;
+    late String keys, known;
     const passphrase = 'correct horse';
 
     setUpAll(() async {
@@ -130,9 +134,12 @@ void main() {
         '-f',
         '$keys/id_rsa'
       ]);
-      final authorized = '${File('$keys/id_ed25519.pub').readAsStringSync()}'
-          '${File('$keys/id_rsa.pub').readAsStringSync()}';
-      // The client must derive the public key itself.
+      _run(keygen, ['-q', '-t', 'ed25519', '-N', '', '-f', '$keys/cli_key']);
+      final authorized = [
+        for (final k in ['id_ed25519', 'id_rsa', 'cli_key'])
+          File('$keys/$k.pub').readAsStringSync(),
+      ].join();
+      // dartgit must derive the public keys itself.
       File('$keys/id_ed25519.pub').deleteSync();
       File('$keys/id_rsa.pub').deleteSync();
       server = await Sshd.start(keys, authorized);
@@ -141,103 +148,185 @@ void main() {
       server?.stop();
       if (server != null) Directory(keys).deleteSync(recursive: true);
     });
-    setUp(() {
-      final root = tempDir('sshremote');
-      remote = '$root/notes.git';
-      remote256 = '$root/notes256.git';
-      git(['init', '-q', '--bare', '-b', 'main', remote], cwd: root);
-      git([
-        'init',
-        '-q',
-        '--bare',
-        '-b',
-        'main',
-        '--object-format=sha256',
-        remote256
-      ], cwd: root);
-      known = '${tempDir()}/known_hosts.json';
-    });
+    setUp(() => known = '${tempDir()}/known_hosts.json');
 
-    String url() => 'ssh://$_user@127.0.0.1:${port()}$remote';
-    Git keyGit(String key, {String? pass}) => Git(
+    /// git's ssh: OpenSSH with a plain key, no prompts.
+    Map<String, String> sshEnv() => {
+          'GIT_SSH_COMMAND': '${_which('ssh')} -i $keys/cli_key '
+              '-o IdentitiesOnly=yes -o BatchMode=yes '
+              '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null '
+              '-o LogLevel=ERROR',
+        };
+    Git keyGit(String key, {String? pass}) => goldenGit(
           credentials: SshKey('$keys/$key', passphrase: pass),
           verifyHostKey: pinTo(known),
-          authorName: key,
-          authorEmail: '$key@x',
         );
+    String sshUrl(String path) => 'ssh://$_user@127.0.0.1:${port()}$path';
 
-    Future<void> commitAll(Git g, String dir, String m) async {
-      await g.add(dir, ['.']);
-      await g.commit(dir, m);
+    for (final fmt in ObjectFormat.values) {
+      test('${fmt.name}: clone, push, fetch and rebase match git over ssh',
+          () async {
+        final root = tempDir('sshremote');
+        for (final name in ['one.git', 'two.git']) {
+          cli([
+            'init',
+            '-q',
+            '--bare',
+            '-b',
+            'main',
+            '--object-format=${fmt.name}',
+            name
+          ], root);
+          final w = '$root/seed-$name';
+          cli(['clone', '-q', '$root/$name', w], root);
+          writeFile(w, 'n.md', '1\n2\n3\n');
+          cli(['add', '-A'], w);
+          cli(['commit', '-q', '-m', 'seed'], w);
+          cli(['push', '-q', 'origin', 'main'], w);
+        }
+        final dg = keyGit('id_ed25519', pass: passphrase);
+        final c = tempDir('sshclones');
+        final t = Twin('$c/cli', '$c/dg');
+        cli(['clone', '-q', sshUrl('$root/one.git'), t.cliDir], c,
+            env: sshEnv());
+        await dg.clone(sshUrl('$root/two.git'), t.dgDir);
+        await t.expectSame(dg, reason: 'clone');
+
+        t.write('n.md', '1a\n2\n3\n');
+        cli(['commit', '-q', '-am', 'edit'], t.cliDir);
+        await dg.commit(t.dgDir, 'edit', only: ['n.md']);
+        cli(['push', '-q', 'origin', 'main'], t.cliDir, env: sshEnv());
+        await dg.push(t.dgDir, 'main');
+        expect(describe('$root/two.git', bare: true),
+            describe('$root/one.git', bare: true));
+
+        for (final name in ['one.git', 'two.git']) {
+          final w = '$root/other-$name';
+          cli(['clone', '-q', '$root/$name', w], root);
+          writeFile(w, 'n.md', '1a\n2\n3b\n');
+          cli(['commit', '-q', '-am', 'other'], w);
+          cli(['push', '-q', 'origin', 'main'], w);
+        }
+        t.write('local.md', 'l\n');
+        cli(['add', '-A'], t.cliDir);
+        cli(['commit', '-q', '-m', 'local'], t.cliDir);
+        // A second key type for the rest of the conversation.
+        final rsa = keyGit('id_rsa');
+        await rsa.add(t.dgDir, ['.']);
+        await rsa.commit(t.dgDir, 'local');
+        cli(['fetch', '-q', 'origin'], t.cliDir, env: sshEnv());
+        await rsa.fetch(t.dgDir);
+        cli(['rebase', '-q', 'origin/main'], t.cliDir);
+        expect((await rsa.rebase(t.dgDir, 'origin/main')).ok, isTrue);
+        await t.expectSame(rsa, reason: 'rebase');
+        cli(['push', '-q', 'origin', 'main'], t.cliDir, env: sshEnv());
+        await rsa.push(t.dgDir, 'main');
+        expect(describe('$root/two.git', bare: true),
+            describe('$root/one.git', bare: true));
+        expectFsck('$root/two.git');
+        expect(await rsa.lsRemote(sshUrl('$root/two.git')), {
+          for (final l in lines(
+              cli(['ls-remote', sshUrl('$root/one.git')], root, env: sshEnv())))
+            l.split('\t')[1]: l.split('\t')[0],
+        });
+      });
     }
 
-    test('SHA-256 repository over SSH', () async {
+    test('host keys are pinned on first use and a changed key is refused',
+        () async {
+      final root = tempDir('pin');
+      cli(['init', '-q', '--bare', 'r.git'], root);
       final g = keyGit('id_rsa');
-      final url256 = 'ssh://$_user@127.0.0.1:${port()}$remote256';
-      final a = '${tempDir()}/a', b = '${tempDir()}/b';
-      await g.clone(url256, a, branch: 'main');
-      expect(await g.objectFormat(a), ObjectFormat.sha256);
-      writeFile(a, 'n.md', 'n\n');
-      await commitAll(g, a, 'one');
-      await g.push(a, 'main');
-      await g.clone(url256, b);
-      expect(readFile(b, 'n.md'), 'n\n');
-      git(['fsck', '--strict', '--no-dangling'], cwd: remote256);
-    });
-
-    test('clone, push, rebase with key files; host key pinned', () async {
-      final ed = keyGit('id_ed25519', pass: passphrase), rsa = keyGit('id_rsa');
-      final a = '${tempDir()}/a', b = '${tempDir()}/b';
-      await ed.clone(url(), a, branch: 'main');
-      writeFile(a, 'n.md', '1\n2\n3\n');
-      await commitAll(ed, a, 'one');
-      await ed.push(a, 'main');
-      await rsa.clone(url(), b, branch: 'main');
-      writeFile(a, 'n.md', '1a\n2\n3\n');
-      await commitAll(ed, a, 'a');
-      await ed.push(a, 'main');
-      writeFile(b, 'n.md', '1\n2\n3b\n');
-      await commitAll(rsa, b, 'b');
-      await rsa.fetch(b);
-      expect((await rsa.rebase(b, 'origin/main')).ok, isTrue);
-      await rsa.push(b, 'main');
-      expect(readFile(b, 'n.md'), '1a\n2\n3b\n');
-      git(['fsck', '--strict', '--no-dangling'], cwd: remote);
-
+      await g.lsRemote(sshUrl('$root/r.git'));
       final pins =
           jsonDecode(File(known).readAsStringSync()) as Map<String, dynamic>;
       expect(pins.keys, ['[127.0.0.1]:${port()}']);
-      expect(pins.values.single, startsWith('SHA256:'));
+      // The pin is OpenSSH's fingerprint of the host key.
+      final fp = (Process.runSync(_which('ssh-keygen')!, [
+        '-l',
+        '-E',
+        'sha256',
+        '-f',
+        '$keys/host_key.pub'
+      ]).stdout as String)
+          .split(' ')[1];
+      expect(pins.values.single, fp);
       File(known).writeAsStringSync(
           jsonEncode({'[127.0.0.1]:${port()}': 'SHA256:other'}));
       await expectLater(
-          ed.fetch(a),
+          g.lsRemote(sshUrl('$root/r.git')),
+          throwsA(isA<GitException>().having((e) => e.message, 'message',
+              contains('Host key verification failed'))));
+      // Without a verifier every host is unknown, as with ssh in batch mode.
+      await expectLater(
+          goldenGit(credentials: SshKey('$keys/id_rsa'))
+              .lsRemote(sshUrl('$root/r.git')),
           throwsA(isA<GitException>().having((e) => e.message, 'message',
               contains('Host key verification failed'))));
     });
 
     test('authentication errors are reported', () async {
-      await expectLater(
-          keyGit('id_ed25519').clone(url(), '${tempDir()}/x'),
+      final root = tempDir('auth');
+      cli(['init', '-q', '--bare', 'r.git'], root);
+      Future<void> fails(Git g, String message) => expectLater(
+          g.lsRemote(sshUrl('$root/r.git')),
           throwsA(isA<GitException>()
-              .having((e) => e.message, 'message', contains('passphrase'))));
+              .having((e) => e.message, 'message', contains(message))));
+      await fails(keyGit('id_ed25519'), 'passphrase');
+      await fails(keyGit('id_ed25519', pass: 'wrong'), 'cannot load SSH key');
+      await fails(keyGit('missing'), 'not found');
+      await fails(goldenGit(verifyHostKey: pinTo(known)), 'authentication');
+      final notAKey = '$keys/not-a-key';
+      File(notAKey).writeAsStringSync('hello');
+      await fails(
+          goldenGit(credentials: SshKey(notAKey), verifyHostKey: pinTo(known)),
+          'cannot load SSH key');
+      await fails(
+          goldenGit(
+              credentials: const SshAgent(socketPath: '/nonexistent/agent'),
+              verifyHostKey: pinTo(known)),
+          'SSH agent');
+      final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final closed = s.port;
+      await s.close();
       await expectLater(
-          Git(verifyHostKey: pinTo(known)).clone(url(), '${tempDir()}/y'),
+          keyGit('id_rsa').lsRemote('ssh://$_user@127.0.0.1:$closed/x.git'),
           throwsA(isA<GitException>().having(
-              (e) => e.message, 'message', contains('authentication'))));
+              (e) => e.message, 'message', contains('cannot connect'))));
+      // The remote command fails: no such repository.
+      await expectLater(keyGit('id_rsa').lsRemote(sshUrl('$root/missing.git')),
+          throwsA(isA<GitException>()));
     });
 
-    test('ssh agent', () async {
-      final pair = SSHKeyPair.fromPem(
-          File('$keys/id_ed25519').readAsStringSync(), passphrase);
-      final sock = '${Directory.systemTemp.createTempSync('dga').path}/agent';
-      final agent = await TestAgent.start(sock, pair);
+    test('ssh agent with ed25519 and RSA keys', () async {
+      final root = tempDir('agent');
+      cli(['init', '-q', '--bare', 'r.git'], root);
+      for (final (file, pass) in [
+        ('id_ed25519', passphrase),
+        ('id_rsa', null)
+      ]) {
+        final pair =
+            SSHKeyPair.fromPem(File('$keys/$file').readAsStringSync(), pass);
+        final sock = '${Directory.systemTemp.createTempSync('dga').path}/agent';
+        final agent = await TestAgent.start(sock, pair);
+        addTearDown(agent.close);
+        final g = goldenGit(
+            credentials: SshAgent(socketPath: sock),
+            verifyHostKey: pinTo(known));
+        final dir = '${tempDir()}/c';
+        await g.clone(sshUrl('$root/r.git'), dir);
+        expect(await g.isRepository(dir), isTrue);
+      }
+      final empty = '${Directory.systemTemp.createTempSync('dga').path}/agent';
+      final agent = await TestAgent.start(empty, []);
       addTearDown(agent.close);
-      final g = Git(
-          credentials: SshAgent(socketPath: sock), verifyHostKey: pinTo(known));
-      final dir = '${tempDir()}/c';
-      await g.clone(url(), dir, branch: 'main');
-      expect(await g.isRepository(dir), isTrue);
+      await expectLater(
+          goldenGit(
+                  credentials: SshAgent(socketPath: empty),
+                  verifyHostKey: pinTo(known))
+              .lsRemote(sshUrl('$root/r.git')),
+          throwsA(isA<GitException>()
+              .having((e) => e.message, 'message', contains('no keys'))));
     });
   });
 }

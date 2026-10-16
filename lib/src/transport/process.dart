@@ -24,11 +24,7 @@ class ProcessTransport implements Transport {
               await p.stdin.close();
             } catch (_) {}
             await err;
-            await p.exitCode.timeout(const Duration(seconds: 10),
-                onTimeout: () {
-              p.kill();
-              return -1;
-            });
+            await p.exitCode; // git exits once its stdin is closed
           },
         );
       }, timeout);

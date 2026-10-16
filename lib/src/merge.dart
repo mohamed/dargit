@@ -92,11 +92,6 @@ List<(int, int)>? _matches(List<int> a, List<int> b, {int maxD = 4000}) {
       x = prevX;
       y = prevY;
     }
-    while (x > 0 && y > 0) {
-      x--;
-      y--;
-      mid.add((pre + x, pre + y));
-    }
     result.addAll(mid.reversed);
   }
   for (var i = 0; i < suf; i++) {
@@ -121,13 +116,10 @@ List<_Hunk> _hunks(List<String> base, List<String> other, List<int> bi,
   return out;
 }
 
-bool _overlaps(_Hunk a, int start, int end) {
-  if (a.start == a.end || start == end) {
-    // Insertions conflict with anything touching their position.
-    return a.start <= end && start <= a.end;
-  }
-  return a.start < end && start < a.end;
-}
+bool _overlaps(_Hunk a, int start, int end) =>
+    // Like git (xdiff): changes conflict when they overlap or touch, i.e.
+    // when no unchanged line separates them.
+    a.start <= end && start <= a.end;
 
 /// Three-way line merge. Returns the merged text or null on conflict.
 String? merge3Text(String base, String ours, String theirs) {

@@ -38,13 +38,6 @@ enum ObjectFormat {
         'sha256' => sha256,
         _ => throw FormatException('unknown object format "$name"'),
       };
-
-  /// The format of a hex object id, from its length.
-  static ObjectFormat? ofId(String id) => switch (id.length) {
-        40 => sha1,
-        64 => sha256,
-        _ => null,
-      };
 }
 
 final _hexRe = RegExp(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$');

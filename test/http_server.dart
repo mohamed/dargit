@@ -16,6 +16,15 @@ class GitHttpServer {
     final expected = 'Basic ${base64.encode(utf8.encode('$user:$password'))}';
     server.listen((req) async {
       try {
+        // /moved/<repo>/... answers with a redirect to /<repo>/...
+        if (req.uri.path.startsWith('/moved/')) {
+          final to = req.uri.replace(path: req.uri.path.substring(6));
+          req.response
+            ..statusCode = HttpStatus.movedPermanently
+            ..headers.set(HttpHeaders.locationHeader, to.toString());
+          await req.response.close();
+          return;
+        }
         if (req.headers.value(HttpHeaders.authorizationHeader) != expected) {
           req.response
             ..statusCode = 401

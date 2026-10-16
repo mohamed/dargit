@@ -130,7 +130,12 @@ List<StatusEntry> status(Repository repo) {
     }
     if (x != ' ' || y != ' ') out.add(StatusEntry(p, x, y));
   }
-  out.sort((a, b) => comparePaths(a.path, b.path));
+  // Like git: tracked changes first, then untracked files, each by path.
+  out.sort((a, b) {
+    final ua = a.index == '?', ub = b.index == '?';
+    if (ua != ub) return ua ? 1 : -1;
+    return comparePaths(a.path, b.path);
+  });
   return out;
 }
 
@@ -148,7 +153,7 @@ void add(Repository repo, List<String> pathspecs) {
 void _stage(Repository repo, GitIndex index, Map<String, TreeEntry> head,
     Set<String> specs) {
   bool matches(String p) => specs.any((s) => underPathspec(p, s));
-  final files = repo.scanWorktree({...index.entries.keys, ...head.keys});
+  final files = repo.scanWorktree(index, head);
   index.entries.removeWhere((p, _) => matches(p) && !files.containsKey(p));
   index.conflicts.removeWhere((e) => matches(e.path));
   for (final f in files.values) {
@@ -217,7 +222,8 @@ String? commit(Repository repo, String message,
 /// `git reset --hard <commit>`: moves the current branch (or detached HEAD)
 /// to [target] and makes index and working tree match it, discarding
 /// changes to tracked files. Untracked files are left alone.
-void resetHard(Repository repo, String target, {String? reflogMessage}) {
+void resetHard(Repository repo, String target,
+    {required String reflogMessage}) {
   final head = repo.treeOfCommit(repo.headCommit);
   final index = repo.readIndex();
   // What is on disk now for every tracked path.
@@ -229,6 +235,5 @@ void resetHard(Repository repo, String target, {String? reflogMessage}) {
       if (current[p] != null) p: current[p]!,
   };
   repo.checkout(from, repo.treeOfCommit(target));
-  repo.updateRef(repo.headRef ?? 'HEAD', target,
-      reflogMessage ?? 'reset: moving to $target');
+  repo.updateRef(repo.headRef ?? 'HEAD', target, reflogMessage);
 }

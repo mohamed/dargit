@@ -59,7 +59,7 @@ void remoteRemove(Repository repo, String remote) {
   for (final ref in repo.refs.list(_tracking(remote)).keys) {
     repo.updateRef(ref, null, '');
   }
-  final head = File(joinPath(repo.gitDir, '${_tracking(remote)}HEAD'));
+  final head = File(repo.path('${_tracking(remote)}HEAD'));
   if (head.existsSync()) head.deleteSync();
 }
 
@@ -99,7 +99,20 @@ class FetchResult {
 /// `+refs/heads/*:refs/remotes/<remote>/*` (tags are not fetched).
 Future<FetchResult> fetch(Repository repo, String remote, Transport transport,
         {bool prune = false}) async =>
-    _fetch(repo, remote, await transport.openUpload(), prune: prune);
+    _fetch(repo, remote, await transport.openUpload(),
+        prune: prune, reflog: 'fetch${prune ? ' --prune' : ''} $remote');
+
+/// `git ls-remote <url>`: the remote's branches and tags (and `HEAD` when
+/// it points at a commit).
+Future<Map<String, String>> lsRemote(Transport transport) async {
+  final session = await transport.openUpload();
+  try {
+    final head = session.head == null ? null : session.refs[session.head];
+    return {if (head != null) 'HEAD': head, ...session.refs};
+  } finally {
+    await session.close();
+  }
+}
 
 /// Refuses a remote whose object format differs from [repo]'s, like git
 /// ("mismatched object format").
@@ -113,7 +126,7 @@ void _checkFormat(Repository repo, ObjectFormat theirs) {
 /// Fetches through an open [session] and closes it.
 Future<FetchResult> _fetch(
     Repository repo, String remote, UploadSession session,
-    {bool prune = false, String reflogPrefix = 'fetch'}) async {
+    {bool prune = false, required String? reflog}) async {
   try {
     _checkFormat(repo, session.format);
     final heads = <String, String>{
@@ -134,12 +147,16 @@ Future<FetchResult> _fetch(
       final local = '$prefix${name.substring('refs/heads/'.length)}';
       final old = existing[local];
       if (old == id) return;
+      if (reflog == null) {
+        repo.refs.update(local, id); // git clone logs no tracking refs
+        return;
+      }
       final how = old == null
           ? 'storing head'
           : isAncestor(repo.odb, old, id)
               ? 'fast-forward'
               : 'forced-update';
-      repo.updateRef(local, id, '$reflogPrefix: $how');
+      repo.updateRef(local, id, '$reflog: $how');
     });
     if (prune) {
       for (final name in existing.keys) {
@@ -219,9 +236,9 @@ Future<void> push(
 }
 
 /// `git clone [-b <branch>] <url> <dir>`. Without [branch] the remote's
-/// HEAD is checked out. An empty remote leaves the branch unborn. When the
-/// remote has branches but not [branch], the clone fails and [dir] is
-/// removed, like git.
+/// HEAD is checked out, and an empty remote gives an unborn branch. When
+/// the remote has no [branch] (an empty remote included), the clone fails
+/// and [dir] is removed, like git.
 Future<void> clone(String url, Transport transport, String dir,
     {String? branch, Signature? identity}) async {
   final d = Directory(dir);
@@ -243,17 +260,30 @@ Future<void> clone(String url, Transport transport, String dir,
       await session.close();
       rethrow;
     }
-    final fetched =
-        await _fetch(repo, 'origin', session, reflogPrefix: 'clone');
+    final fetched = await _fetch(repo, 'origin', session, reflog: null);
     final heads = fetched.branches;
-    if (heads.isEmpty) return; // empty repository
+    if (branch != null && !heads.containsKey('refs/heads/$branch')) {
+      throw GitError('Remote branch $branch not found in upstream origin');
+    }
+    if (heads.isEmpty) {
+      // "You appear to have cloned an empty repository": HEAD names the
+      // remote's (unborn) default branch when it is known.
+      if (fetched.head != null) repo.refs.setSymbolic('HEAD', fetched.head!);
+      final head = repo.headRef!;
+      repo.config
+        ..set(
+            'branch', head.substring('refs/heads/'.length), 'remote', 'origin')
+        ..set('branch', head.substring('refs/heads/'.length), 'merge', head)
+        ..save();
+      return;
+    }
     final target = branch == null ? fetched.head : 'refs/heads/$branch';
     final id = target == null ? null : heads[target];
     if (id == null) {
-      throw GitError(branch == null
-          ? 'remote HEAD refers to nonexistent ref, unable to checkout'
-          : 'Remote branch $branch not found in upstream origin '
-              '(branches: ${heads.keys.map((k) => k.substring(11)).join(', ')})');
+      // "remote HEAD refers to nonexistent ref, unable to checkout": git
+      // keeps the clone with HEAD on that unborn branch.
+      if (target != null) repo.refs.setSymbolic('HEAD', target);
+      return;
     }
     final name = target!.substring('refs/heads/'.length);
     repo.refs.setSymbolic('HEAD', target);

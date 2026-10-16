@@ -26,6 +26,7 @@ class Git {
     this.authorEmail,
     this.networkTimeout = const Duration(minutes: 2),
     this.useIsolates = true,
+    this.clock,
   });
 
   /// Credentials for remote operations.
@@ -46,6 +47,19 @@ class Git {
 
   /// Run each command in `Isolate.run` (keeps a Flutter UI responsive).
   final bool useIsolates;
+
+  /// Time recorded in commits and reflogs, like `GIT_AUTHOR_DATE` and
+  /// `GIT_COMMITTER_DATE`; the current time when null. A UTC result is
+  /// written as `+0000`, a local one with its offset. Must be sendable to
+  /// an isolate (a top-level function or a closure over plain values).
+  final DateTime Function()? clock;
+
+  Signature _sign(String name, String email) {
+    final c = clock;
+    if (c == null) return Signature.now(name, email);
+    final t = c();
+    return Signature(name, email, t, t.timeZoneOffset.inMinutes);
+  }
 
   Future<T> _run<T>(String op, FutureOr<T> Function() body) {
     Future<T> guarded() async {
@@ -103,7 +117,7 @@ class Git {
       repo?.close();
     }
     if (name == null || email == null) return null;
-    return Signature.now(name, email);
+    return _sign(name, email);
   }
 
   Signature _identity(Repository repo) {
@@ -164,7 +178,12 @@ class Git {
           branch: branch,
           identity: authorName == null || authorEmail == null
               ? null
-              : Signature.now(authorName!, authorEmail!)));
+              : _sign(authorName!, authorEmail!)));
+
+  /// `git ls-remote <url>`: ref name -> id for the remote's branches and
+  /// tags, plus `HEAD` when it points at a commit.
+  Future<Map<String, String>> lsRemote(String url) =>
+      _run('ls-remote', () => remote_.lsRemote(_transportFor(url)));
 
   /// `git remote get-url <remote>`; null when it does not exist.
   Future<String?> remoteGetUrl(String dir, {String remote = 'origin'}) =>

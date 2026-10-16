@@ -18,7 +18,9 @@ class WorkFile {
 }
 
 class Repository {
-  Repository._(this.gitDir, this.workDir) : refs = RefStore(gitDir) {
+  Repository._(this.gitDir, this.workDir)
+      : commonDir = _commonDir(gitDir),
+        refs = RefStore(gitDir, _commonDir(gitDir)) {
     final cfg = config;
     final version =
         int.tryParse(cfg.get('core', null, 'repositoryformatversion') ?? '0') ??
@@ -27,15 +29,35 @@ class Repository {
     if (version > 1) {
       throw GitError('unsupported repository format version $version');
     }
-    format = ObjectFormat.parse(version == 0 ? null : name);
-    odb = ObjectDatabase(joinPath(gitDir, 'objects'), format);
+    try {
+      format = ObjectFormat.parse(version == 0 ? null : name);
+    } on FormatException {
+      throw GitError("invalid value for 'extensions.objectformat': '$name'");
+    }
+    odb = ObjectDatabase(joinPath(commonDir, 'objects'), format);
   }
+
+  /// The `commondir` a linked worktree's git directory points at.
+  static String _commonDir(String gitDir) {
+    final f = File(joinPath(gitDir, 'commondir'));
+    if (!f.existsSync()) return gitDir;
+    final c = f.readAsStringSync().trim();
+    return File(c).isAbsolute ? c : joinPath(gitDir, c);
+  }
+
+  /// Path of [name] inside the git directory (see [gitPath]).
+  String path(String name) => gitPath(gitDir, commonDir, name);
 
   /// The object format (`extensions.objectFormat`): SHA-1 or SHA-256.
   late final ObjectFormat format;
 
-  /// The `.git` directory (or the bare repository itself).
+  /// The `.git` directory (or the bare repository itself); for a linked
+  /// worktree, its own directory under `<common>/worktrees/`.
   final String gitDir;
+
+  /// The directory holding objects, refs and config: [gitDir] except in a
+  /// linked worktree.
+  final String commonDir;
 
   /// The working tree, or null for a bare repository.
   final String? workDir;
@@ -44,7 +66,7 @@ class Repository {
   GitConfig? _config;
 
   GitConfig get config =>
-      _config ??= GitConfig.load(joinPath(gitDir, 'config'));
+      _config ??= GitConfig.load(joinPath(commonDir, 'config'));
 
   bool get isBare => workDir == null;
 
@@ -54,10 +76,12 @@ class Repository {
     return w;
   }
 
-  static bool _looksLikeGitDir(String dir) =>
-      File(joinPath(dir, 'HEAD')).existsSync() &&
-      Directory(joinPath(dir, 'objects')).existsSync() &&
-      Directory(joinPath(dir, 'refs')).existsSync();
+  static bool _looksLikeGitDir(String dir) {
+    final common = _commonDir(dir);
+    return File(joinPath(dir, 'HEAD')).existsSync() &&
+        Directory(joinPath(common, 'objects')).existsSync() &&
+        Directory(joinPath(common, 'refs')).existsSync();
+  }
 
   /// Opens the repository whose work tree is [dir] (or the bare repository
   /// at [dir]); returns null when [dir] is not a repository.
@@ -157,7 +181,7 @@ class Repository {
     final old = refs.resolve(name) ?? format.zeroId;
     if (id == null) {
       refs.delete(name);
-      final log = File(joinPath(gitDir, 'logs/$name'));
+      final log = File(path('logs/$name'));
       if (log.existsSync()) log.deleteSync();
       return;
     }
@@ -173,7 +197,7 @@ class Repository {
       if (name != 'HEAD' && headRef == name) 'HEAD',
     ];
     for (final t in targets) {
-      final f = File(joinPath(gitDir, 'logs/$t'));
+      final f = File(path('logs/$t'));
       f.parent.createSync(recursive: true);
       f.writeAsStringSync(line, mode: FileMode.append);
     }
@@ -187,14 +211,19 @@ class Repository {
 
   IgnoreRules _loadIgnore() {
     final rules = IgnoreRules();
-    final exclude = File(joinPath(gitDir, 'info/exclude'));
+    final exclude = File(path('info/exclude'));
     if (exclude.existsSync()) rules.addPatterns('', exclude.readAsStringSync());
     return rules;
   }
 
   /// Lists files of the working tree, skipping `.git`, ignored paths
-  /// (unless [tracked] contains them) and nested repositories.
-  Map<String, WorkFile> scanWorktree(Set<String> tracked) {
+  /// (unless tracked in [index] or [head]) and nested repositories other
+  /// than tracked submodules.
+  Map<String, WorkFile> scanWorktree(
+      GitIndex index, Map<String, TreeEntry> head) {
+    final tracked = {...index.entries.keys, ...head.keys};
+    bool isGitlink(String p) =>
+        (index.entries[p]?.modeString ?? head[p]?.mode) == modeGitlink;
     final root = _work;
     final rules = _loadIgnore();
     final out = <String, WorkFile>{};
@@ -227,7 +256,10 @@ class Repository {
         final decoded = e.path.substring(sep + 1);
         if (decoded == '.git') continue;
         final path = rel.isEmpty ? decoded : '$rel/$decoded';
-        if (e is Directory) {
+        if (e is Directory && isGitlink(path)) {
+          // A gitlink (submodule): the directory stands for one commit.
+          out[path] = WorkFile(path, modeGitlink, e.statSync());
+        } else if (e is Directory) {
           if (!trackedDirs.contains(path)) {
             if (rules.isIgnored(path, isDir: true)) continue;
             if (FileSystemEntity.typeSync(joinPath(e.path, '.git'),
@@ -276,6 +308,7 @@ class Repository {
 
   /// Mode for a working-tree file, honouring the known mode on Windows.
   String modeFor(WorkFile f, String? knownMode) {
+    if (f.mode == modeGitlink) return modeGitlink;
     if (Platform.isWindows) {
       return knownMode == modeExec || knownMode == modeLink
           ? knownMode!
@@ -291,7 +324,17 @@ class Repository {
   /// when it is trustworthy; writes the blob when [write] is set.
   String blobIdFor(WorkFile f, GitIndex index, {required bool write}) {
     final cached = index.entries[f.path];
-    if (cached != null && cached.statMatches(f.stat)) {
+    if (f.mode == modeGitlink) {
+      // Like git: the submodule's HEAD, or the recorded commit when the
+      // submodule is not checked out.
+      final sub = tryOpen(joinPath(_work, f.path));
+      final id = sub?.headCommit;
+      sub?.close();
+      return id ?? cached?.id ?? format.zeroId;
+    }
+    // Dart has no lstat: a symlink's stat is its target's, so links are
+    // always re-hashed (the blob is just the target path).
+    if (cached != null && f.mode != modeLink && cached.statMatches(f.stat)) {
       final racy = index.fileMtime == null ||
           !f.stat.modified.isBefore(index.fileMtime!);
       if (!racy && (!write || odb.has(cached.id))) return cached.id;
@@ -311,7 +354,7 @@ class Repository {
     bool includeUntracked = true,
   }) {
     final tracked = {...index.entries.keys, ...head.keys};
-    final files = scanWorktree(tracked);
+    final files = scanWorktree(index, head);
     final out = <String, TreeEntry>{};
     for (final f in files.values) {
       final isTracked = tracked.contains(f.path);
@@ -327,6 +370,19 @@ class Repository {
 
   IndexEntry indexEntryFor(String path, String id, String mode) {
     final full = joinPath(_work, path);
+    if (mode == modeGitlink) {
+      return IndexEntry(path: path, id: id, mode: int.parse(mode, radix: 8));
+    }
+    if (mode == modeLink) {
+      // No lstat in Dart: record git's size for a link (its target's
+      // length) and no times, so git re-checks it instead of trusting us.
+      final target = readWorkFile(path);
+      return IndexEntry(
+          path: path,
+          id: id,
+          mode: int.parse(mode, radix: 8),
+          size: target?.length ?? 0);
+    }
     final stat = FileStat.statSync(full);
     if (stat.type == FileSystemEntityType.notFound) {
       return IndexEntry(path: path, id: id, mode: int.parse(mode, radix: 8));
@@ -344,7 +400,7 @@ class Repository {
       final full = joinPath(root, p);
       final t = FileSystemEntity.typeSync(full, followLinks: false);
       if (t == FileSystemEntityType.file || t == FileSystemEntityType.link) {
-        File(full).deleteSync();
+        _deleteFile(full, t);
         _pruneEmptyDirs(p);
       }
     }
@@ -382,19 +438,28 @@ class Repository {
     writeIndex(index);
   }
 
+  /// Deletes a file or symlink (a link itself, never its target).
+  static void _deleteFile(String full, FileSystemEntityType type) =>
+      type == FileSystemEntityType.link
+          ? Link(full).deleteSync()
+          : File(full).deleteSync();
+
   void _writeWorkFile(String path, TreeEntry e) {
     final full = joinPath(_work, path);
     final t = FileSystemEntity.typeSync(full, followLinks: false);
     if (t == FileSystemEntityType.directory) {
       Directory(full).deleteSync(recursive: true);
     } else if (t != FileSystemEntityType.notFound) {
-      File(full).deleteSync();
+      _deleteFile(full, t);
     }
     // A file may be in the way of a directory we need.
     final parts = path.split('/');
     for (var i = 1; i < parts.length; i++) {
       final dir = joinPath(_work, parts.sublist(0, i).join('/'));
-      if (FileSystemEntity.isFileSync(dir)) File(dir).deleteSync();
+      final t = FileSystemEntity.typeSync(dir, followLinks: false);
+      if (t == FileSystemEntityType.file || t == FileSystemEntityType.link) {
+        _deleteFile(dir, t);
+      }
     }
     File(full).parent.createSync(recursive: true);
     if (e.mode == modeGitlink) {

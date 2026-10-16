@@ -3,14 +3,34 @@ import 'dart:io';
 import 'util.dart';
 import 'hash.dart';
 
+/// Where [name] (relative to the git directory) lives in a linked worktree:
+/// HEAD, the index and other per-worktree files in [gitDir], refs, logs of
+/// refs, objects, config and the rest in [commonDir] (git's `commondir`).
+String gitPath(String gitDir, String commonDir, String name) {
+  const perWorktree = ['refs/bisect/', 'refs/worktree/', 'refs/rewritten/'];
+  final ref = name.startsWith('logs/') ? name.substring(5) : name;
+  final common = !perWorktree.any(ref.startsWith) &&
+      (ref.startsWith('refs/') ||
+          const {
+            'objects',
+            'config',
+            'packed-refs',
+            'info',
+            'hooks',
+            'shallow',
+          }.contains(name.split('/').first));
+  return joinPath(common ? commonDir : gitDir, name);
+}
+
 /// Loose refs, packed-refs and symbolic refs (HEAD).
 class RefStore {
-  RefStore(this.gitDir);
+  RefStore(this.gitDir, [String? commonDir]) : commonDir = commonDir ?? gitDir;
 
   final String gitDir;
+  final String commonDir;
 
-  File _loose(String name) => File(joinPath(gitDir, name));
-  File get _packedFile => File(joinPath(gitDir, 'packed-refs'));
+  File _loose(String name) => File(gitPath(gitDir, commonDir, name));
+  File get _packedFile => File(joinPath(commonDir, 'packed-refs'));
 
   Map<String, String> _readPacked() {
     final f = _packedFile;
@@ -108,9 +128,10 @@ class RefStore {
     _readPacked().forEach((k, v) {
       if (k.startsWith(prefix)) out[k] = v;
     });
-    final dir = Directory(joinPath(gitDir, prefix));
+    final root = prefix.startsWith('refs/') ? commonDir : gitDir;
+    final dir = Directory(joinPath(root, prefix));
     if (dir.existsSync()) {
-      final base = Directory(gitDir).absolute.path;
+      final base = Directory(root).absolute.path;
       for (final e in dir.listSync(recursive: true, followLinks: false)) {
         if (e is! File || e.path.endsWith('.lock')) continue;
         var rel = e.absolute.path.substring(base.length);

@@ -55,10 +55,9 @@ final Uint32List _crcTable = () {
   return t;
 }();
 
-int crc32(Uint8List data, [int start = 0, int? end]) {
+int crc32(Uint8List data, int start, int end) {
   var c = 0xffffffff;
-  final stop = end ?? data.length;
-  for (var i = start; i < stop; i++) {
+  for (var i = start; i < end; i++) {
     c = _crcTable[(c ^ data[i]) & 0xff] ^ (c >> 8);
   }
   return (c ^ 0xffffffff) & 0xffffffff;

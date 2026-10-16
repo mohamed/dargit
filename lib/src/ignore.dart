@@ -1,4 +1,4 @@
-/// `.gitignore` matching (the commonly used subset of gitignore(5)).
+/// `.gitignore` matching (gitignore(5), with git's wildmatch rules).
 library;
 
 class _Rule {
@@ -89,16 +89,11 @@ String _globToRegex(String glob) {
       sb.write('[^/]');
       i++;
     } else if (c == '[') {
-      final close = glob.indexOf(']', i + 2);
-      if (close < 0) {
-        sb.write(r'\[');
-        i++;
-        continue;
-      }
-      var cls = glob.substring(i + 1, close);
-      if (cls.startsWith('!')) cls = '^${cls.substring(1)}';
-      sb.write('[${cls.replaceAll(r'\', r'\\')}]');
-      i = close + 1;
+      final (cls, next) = _bracket(glob, i);
+      // Like wildmatch: an unclosed bracket makes the pattern match nothing.
+      if (cls == null) return '(?!)';
+      sb.write(cls);
+      i = next;
     } else if (c == r'\' && i + 1 < glob.length) {
       sb.write(RegExp.escape(glob[i + 1]));
       i += 2;
@@ -108,4 +103,70 @@ String _globToRegex(String glob) {
     }
   }
   return sb.toString();
+}
+
+const _posixClasses = {
+  'alnum': 'a-zA-Z0-9',
+  'alpha': 'a-zA-Z',
+  'blank': r' \t',
+  'cntrl': r'\x00-\x1f\x7f',
+  'digit': '0-9',
+  'graph': r'!-~',
+  'lower': 'a-z',
+  'print': r' -~',
+  'punct': r'!-/:-@\[-`{-~',
+  'space': r' \t\n\r\f\v',
+  'upper': 'A-Z',
+  'xdigit': '0-9a-fA-F',
+};
+
+/// The bracket expression starting at `glob[start] == '['`, as git's
+/// wildmatch reads it, converted to a regex (never matching `/`), with the
+/// index after it; null when the bracket is not closed.
+(String?, int) _bracket(String glob, int start) {
+  var i = start + 1;
+  var negate = false;
+  if (i < glob.length && (glob[i] == '!' || glob[i] == '^')) {
+    negate = true;
+    i++;
+  }
+  String esc(int code) => '\\u${code.toRadixString(16).padLeft(4, '0')}';
+  final parts = <String>[];
+  var first = true;
+  while (true) {
+    if (i >= glob.length) return (null, i);
+    var c = glob[i];
+    if (c == ']' && !first) break;
+    first = false;
+    if (c == '[' && i + 1 < glob.length && glob[i + 1] == ':') {
+      final close = glob.indexOf(':]', i + 2);
+      if (close < 0) return (null, i);
+      final cls = _posixClasses[glob.substring(i + 2, close)];
+      if (cls == null) return (null, i); // wildmatch aborts on unknown names
+      parts.add(cls);
+      i = close + 2;
+      continue;
+    }
+    if (c == r'\') {
+      if (++i >= glob.length) return (null, i);
+      c = glob[i];
+    }
+    i++;
+    if (i + 1 < glob.length && glob[i] == '-' && glob[i + 1] != ']') {
+      var hi = glob[i + 1];
+      i += 2;
+      if (hi == r'\') {
+        if (i >= glob.length) return (null, i);
+        hi = glob[i++];
+      }
+      // Like wildmatch, a reversed range matches just its first character.
+      parts.add(hi.codeUnitAt(0) >= c.codeUnitAt(0)
+          ? '${esc(c.codeUnitAt(0))}-${esc(hi.codeUnitAt(0))}'
+          : esc(c.codeUnitAt(0)));
+      continue;
+    }
+    parts.add(esc(c.codeUnitAt(0)));
+  }
+  final body = parts.join();
+  return (negate ? '[^/$body]' : '(?!/)[$body]', i + 1);
 }

@@ -1,37 +1,155 @@
+// The line merge checked against `git merge-file` as the golden reference.
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
+
+import 'package:dartgit/src/hash.dart';
 import 'package:dartgit/src/merge.dart';
+import 'package:dartgit/src/objects.dart';
 import 'package:test/test.dart';
 
+import 'helpers.dart';
+
+/// `git merge-file -p ours base theirs`: the merged text, or null when git
+/// reports conflicts.
+String? gitMergeFile(String dir, String base, String ours, String theirs) {
+  File('$dir/base').writeAsStringSync(base);
+  File('$dir/ours').writeAsStringSync(ours);
+  File('$dir/theirs').writeAsStringSync(theirs);
+  final r = Process.runSync(
+      'git', ['merge-file', '-p', '$dir/ours', '$dir/base', '$dir/theirs'],
+      stdoutEncoding: utf8);
+  if (r.exitCode < 0 || r.exitCode > 127) fail('git merge-file: ${r.stderr}');
+  return r.exitCode == 0 ? r.stdout as String : null;
+}
+
+List<String> _edit(Random r, List<String> base, int maxEdits) {
+  final l = [...base];
+  for (var k = 1 + r.nextInt(maxEdits); k > 0; k--) {
+    final i = r.nextInt(l.length + 1);
+    switch (r.nextInt(3)) {
+      case 0 when i < l.length:
+        l[i] = 'changed ${r.nextInt(4)}';
+      case 1 when i < l.length:
+        l.removeAt(i);
+      default:
+        l.insert(i, 'inserted ${r.nextInt(4)}');
+    }
+  }
+  return l;
+}
+
+String _text(List<String> lines,
+    {bool finalNewline = true, String eol = '\n'}) {
+  if (lines.isEmpty) return '';
+  final s = lines.join(eol);
+  return finalNewline ? '$s$eol' : s;
+}
+
 void main() {
-  const base = 'a\nb\nc\nd\ne\nf\n';
+  group('merge3Text agrees with git merge-file', skip: skipNoGit, () {
+    for (final (name, size, edits, seed) in [
+      ('short files, few edits', 6, 2, 1),
+      ('short files, many edits', 6, 4, 2),
+      ('long files', 40, 4, 3),
+      ('long files, many edits', 40, 8, 4),
+    ]) {
+      test(name, () {
+        final dir = tempDir('merge');
+        final r = Random(seed);
+        for (var i = 0; i < 250; i++) {
+          final base = List.generate(1 + r.nextInt(size), (j) => 'line $j');
+          final finalNewline = r.nextInt(5) != 0;
+          final eol = r.nextInt(6) == 0 ? '\r\n' : '\n';
+          final b = _text(base, finalNewline: finalNewline, eol: eol);
+          final o = _text(_edit(r, base, edits),
+              finalNewline: finalNewline, eol: eol);
+          final t = _text(_edit(r, base, edits),
+              finalNewline: finalNewline, eol: eol);
+          expect(merge3Text(b, o, t), gitMergeFile(dir, b, o, t),
+              reason: 'case $i\nbase:\n$b\nours:\n$o\ntheirs:\n$t');
+        }
+      });
+    }
 
-  test('non-overlapping edits merge', () {
-    expect(merge3Text(base, 'A\nb\nc\nd\ne\nf\n', 'a\nb\nc\nd\ne\nF\n'),
-        'A\nb\nc\nd\ne\nF\n');
-    expect(merge3Text(base, 'a\nb\nx\nc\nd\ne\nf\n', 'a\nb\nc\nd\ne\nf\ny\n'),
-        'a\nb\nx\nc\nd\ne\nf\ny\n');
-    expect(
-        merge3Text(base, 'b\nc\nd\ne\nf\n', 'a\nb\nc\nd\ne\n'), 'b\nc\nd\ne\n');
+    test('edge cases', () {
+      final dir = tempDir('merge');
+      for (final (b, o, t) in [
+        ('', '', ''),
+        ('', 'a\n', ''),
+        ('', 'a\n', 'b\n'),
+        ('', 'a\n', 'a\n'),
+        ('a\n', '', 'a\n'),
+        ('a\n', '', ''),
+        ('a\n', 'b\n', ''),
+        ('a', 'a\nb', 'c\na'),
+        ('a\nb\nc\n', 'a\nB\nc\n', 'a\nB\nc\n'),
+        ('a\nb\nc\nd\n', 'A\nb\nc\nd\n', 'a\nb\nc\nD\n'),
+        ('a\nb\n', 'a\nx\nb\n', 'a\ny\nb\n'),
+        ('a\nb\nc\n', 'a\nc\n', 'a\nb\nC\n'),
+      ]) {
+        expect(merge3Text(b, o, t), gitMergeFile(dir, b, o, t),
+            reason: 'base ${jsonEncode(b)} ours ${jsonEncode(o)} '
+                'theirs ${jsonEncode(t)}');
+      }
+    });
   });
 
-  test('identical changes merge, one-sided changes win', () {
-    expect(merge3Text(base, 'a\nB\nc\nd\ne\nf\n', 'a\nB\nc\nd\ne\nf\n'),
-        'a\nB\nc\nd\ne\nf\n');
-    expect(merge3Text(base, base, 'z\n'), 'z\n');
-    expect(merge3Text(base, 'z\n', base), 'z\n');
-  });
-
-  test('overlapping edits conflict', () {
-    expect(
-        merge3Text(base, 'a\nX\nc\nd\ne\nf\n', 'a\nY\nc\nd\ne\nf\n'), isNull);
-    expect(merge3Text(base, 'a\nb\nX\nd\ne\nf\n', 'a\nb\nc\nd\ne\nf\nmore\n'),
-        'a\nb\nX\nd\ne\nf\nmore\n');
-    // Insertions at the same place conflict.
-    expect(merge3Text(base, 'a\nb\n1\nc\nd\ne\nf\n', 'a\nb\n2\nc\nd\ne\nf\n'),
-        isNull);
-  });
-
-  test('missing final newline is preserved', () {
-    expect(merge3Text('a\nb', 'A\nb', 'a\nb\nc'), 'A\nb\nc');
+  test('splitLines keeps terminators', () {
     expect(splitLines('x\ny'), ['x\n', 'y']);
+    expect(splitLines('x\r\ny\n'), ['x\r\n', 'y\n']);
+    expect(splitLines(''), isEmpty);
+  });
+
+  group('mergeTrees', () {
+    for (final fmt in ObjectFormat.values) {
+      test(fmt.name, () {
+        final db = ObjectDatabase(tempDir('odb'), fmt);
+        TreeEntry blob(String path, String text, [String mode = modeFile]) =>
+            TreeEntry(mode, path, db.write(ObjectType.blob, utf8.encode(text)));
+        final base = {
+          'same': blob('same', 's\n'),
+          'ours-only': blob('ours-only', 'o\n'),
+          'both': blob('both', '1\n2\n3\n4\n5\n'),
+          'conflict': blob('conflict', 'x\n'),
+          'deleted-modified': blob('deleted-modified', 'd\n'),
+          'binary': blob('binary', 'b\x00\n'),
+          'mode': blob('mode', 'm\n'),
+          'link': blob('link', 'target', modeLink),
+        };
+        final ours = {
+          ...base,
+          'ours-only': blob('ours-only', 'o2\n'),
+          'both': blob('both', '1x\n2\n3\n4\n5\n'),
+          'conflict': blob('conflict', 'ours\n'),
+          'binary': blob('binary', 'o\x00\n'),
+          'mode': blob('mode', 'm\n', modeExec),
+          'link': blob('link', 'other', modeLink),
+          'added-same': blob('added-same', 'same\n'),
+          'dir': blob('dir', 'a file\n'),
+        }..remove('deleted-modified');
+        final theirs = {
+          ...base,
+          'both': blob('both', '1\n2\n3\n4\n5x\n'),
+          'conflict': blob('conflict', 'theirs\n'),
+          'deleted-modified': blob('deleted-modified', 'd2\n'),
+          'binary': blob('binary', 't\x00\n'),
+          'mode': blob('mode', 'm2\n'),
+          'link': blob('link', 'third', modeLink),
+          'added-same': blob('added-same', 'same\n'),
+          'dir/inside': blob('dir/inside', 'a dir\n'),
+        };
+        final m = mergeTrees(db, base, ours, theirs);
+        expect(m.conflicts,
+            ['binary', 'conflict', 'deleted-modified', 'dir', 'link']);
+        String text(String p) => utf8.decode(db.read(m.tree[p]!.id).data);
+        expect(text('both'), '1x\n2\n3\n4\n5x\n');
+        expect(text('ours-only'), 'o2\n');
+        expect(text('mode'), 'm2\n');
+        expect(m.tree['mode']!.mode, modeExec);
+        expect(m.tree['added-same']!.id, ours['added-same']!.id);
+        expect(m.tree['same']!.id, base['same']!.id);
+      });
+    }
   });
 }

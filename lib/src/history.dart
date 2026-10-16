@@ -88,8 +88,9 @@ List<String> commitsToReplay(ObjectDatabase odb, String tip, String base) {
 String? revParse(Repository repo, String rev) {
   final r = rev.trim();
   String? id;
-  if (repo.format.isId(r)) {
-    id = r;
+  // Hex is case-insensitive, as in git.
+  if (repo.format.isId(r.toLowerCase())) {
+    id = r.toLowerCase();
   } else {
     for (final name in [
       r,
@@ -104,8 +105,8 @@ String? revParse(Repository repo, String rev) {
       if (id != null) break;
     }
     if (id == null &&
-        RegExp('^[0-9a-f]{4,${repo.format.hexLength - 1}}\$').hasMatch(r)) {
-      id = repo.odb.resolvePrefix(r);
+        RegExp('^[0-9a-fA-F]{4,${repo.format.hexLength - 1}}\$').hasMatch(r)) {
+      id = repo.odb.resolvePrefix(r.toLowerCase());
     }
   }
   if (id == null) return null;
@@ -172,8 +173,8 @@ List<LogEntry> log(Repository repo,
       final from = parentTree == null
           ? null
           : _renameSource(odb, commit.tree, parentTree, mine);
-      if (from == null) break; // created here
-      current = from;
+      // No rename source: like git, keep following the same path.
+      if (from != null) current = from;
     }
   }
   return out;
