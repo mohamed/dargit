@@ -18,10 +18,12 @@ it writes are ordinary Git repositories: the Git CLI can read them, and
   [--follow]`, `show rev:path`, `fetch [--prune]`, `push
   [--force-with-lease]`.
 - **100% compatible with git.** Objects, packs, index, refs, packed-refs,
-  reflogs and config are read and written in git's own formats; tests check
-  the results with `git fsck --strict`, `git status`, `git log --follow`
-  and `git reflog`, and run every remote scenario through the real
-  `git upload-pack`/`receive-pack` and `git http-backend`.
+  reflogs and config are read and written in git's own formats. The tests
+  use git as the golden reference: each scenario runs through the `git`
+  CLI and through dartgit with the same identity and clock, and git's own
+  view of both repositories (object ids, refs, index, status, log, reflog,
+  `fsck --strict`) must be identical. Remote scenarios run against the real
+  `git upload-pack`/`receive-pack`, `git http-backend` and OpenSSH.
 - **No application policy.** What to commit, when to sync, how to resolve
   conflicts and which SSH host keys to trust belong to the app (GitMarker's
   `sync` is built from `status`, `fetch`, `rev-list`, `reset --hard`,
@@ -35,6 +37,7 @@ it writes are ordinary Git repositories: the Git CLI can read them, and
 | `objectFormat(dir)` | `git rev-parse --show-object-format` |
 | `isRepository(dir)` | is `dir` the top of a work tree |
 | `clone(url, dir, branch:)` | `git clone [-b <branch>] <url> <dir>` |
+| `lsRemote(url)` | `git ls-remote <url>` (`HEAD` and branch/tag refs → id) |
 | `remoteGetUrl` / `remoteAdd` / `remoteSetUrl` / `remoteRemove` | `git remote get-url / add / set-url / remove` |
 | `status(dir)` | `git status --porcelain --untracked-files=all` |
 | `add(dir, pathspecs)` | `git add -A -- <pathspecs>` |
@@ -51,7 +54,7 @@ it writes are ordinary Git repositories: the Git CLI can read them, and
 
 Objects: loose objects, packfiles with `.idx` v2 and OFS/REF deltas,
 SHA-1 and SHA-256 (see below). Refs: loose, `packed-refs`, symbolic `HEAD` (unborn branches),
-reflogs. Index v2/v3 read, v2 written. `.gitignore` and
+reflogs, linked worktrees (`commondir`). Index v2/v3/v4 read, v2 written. `.gitignore` and
 `.git/info/exclude` are honoured. Transports (smart protocol v0): local
 paths and `file://`, HTTP(S), SSH via [`dartssh2`](https://pub.dev/packages/dartssh2).
 Every command runs in a background isolate; network operations fail with a
@@ -71,7 +74,8 @@ CLI.
 
 ## Non-goals
 
-Converting a repository between SHA-1 and SHA-256, submodules, LFS, merges (only rebase), tags, hooks,
+Converting a repository between SHA-1 and SHA-256, submodules (gitlinks
+are kept, not cloned), LFS, merges (only rebase), tags, hooks,
 CRLF conversion, sparse checkout, shallow clones, protocol v2, the dumb
 HTTP protocol, and reading global/system git config. See
 [STATUS.md](STATUS.md) for the design decisions and known differences.
@@ -120,12 +124,13 @@ host.
 dart pub get
 dart format --output=none --set-exit-if-changed .
 dart analyze --fatal-infos
-dart test                                # unit, local-remote and git interop tests
+dart test                                # golden tests against the git CLI
 dart test --run-skipped -t network       # clones a public repository over HTTPS
 dart test --run-skipped -t ssh           # needs sshd and ssh-keygen (openssh-server)
+dart run coverage:test_with_coverage -- --run-skipped -x network   # coverage/lcov.info
 ```
 
-Interop tests use the `git` CLI and are skipped when it is not installed.
+Golden tests need the `git` CLI and are skipped when it is not installed.
 
 ## Dependencies and licences
 

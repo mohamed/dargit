@@ -19,19 +19,6 @@ Future<void> expectStatusLikeGit(Git dg, String dir, {String? reason}) async {
       reason: reason);
 }
 
-/// A repository with one commit made by git.
-String gitRepo(ObjectFormat fmt,
-    {Map<String, String> files = const {
-      'a.md': 'a\n',
-    }}) {
-  final d = tempDir('edge');
-  cli(['init', '-q', '-b', 'main', '--object-format=${fmt.name}'], d);
-  files.forEach((p, c) => writeFile(d, p, c));
-  cli(['add', '-A'], d);
-  cli(['commit', '-q', '-m', 'base'], d);
-  return d;
-}
-
 void main() {
   for (final fmt in ObjectFormat.values) {
     group('${fmt.name}:', skip: skipNoGit, () {
@@ -129,6 +116,22 @@ void main() {
         expect(cli(['ls-tree', '-r', 'HEAD', 'lib'], '$root/dg'),
             cli(['ls-tree', '-r', 'HEAD~1', 'lib'], '$root/dg'));
         await expectStatusLikeGit(dg, '$root/dg');
+        // A checked-out submodule whose HEAD moved: modified, and staged
+        // as its new commit, as git does.
+        final t = Twin('$root/cli', '$root/dg');
+        writeFile(t.cliDir, 'a.md', 'edited\n');
+        cli(['commit', '-q', '-am', 'edit next to a gitlink'], t.cliDir);
+        await t.expectSame(dg);
+        for (final d in t.dirs) {
+          cli(['init', '-q', '--object-format=${fmt.name}', 'lib/sub'], d);
+          writeFile(d, 'lib/sub/s.md', 's\n');
+          cli(['-C', 'lib/sub', 'add', '-A'], d);
+          cli(['-C', 'lib/sub', 'commit', '-q', '-m', 'sub'], d);
+        }
+        await t.expectSame(dg);
+        cli(['add', '-A'], t.cliDir);
+        await dg.add(t.dgDir, ['.']);
+        await t.expectSame(dg);
       });
 
       test('commits on a detached HEAD, with reflogs like git', () async {

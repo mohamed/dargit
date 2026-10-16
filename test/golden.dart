@@ -237,3 +237,30 @@ List<String> _lines(String? s) =>
 
 /// Lines of git output, empty output giving an empty list.
 List<String> lines(String s) => _lines(s.trimRight());
+
+/// A repository with one commit made by git.
+String gitRepo(ObjectFormat fmt,
+    {Map<String, String> files = const {
+      'a.md': 'a\n',
+    }}) {
+  final d = tempDir('edge');
+  cli(['init', '-q', '-b', 'main', '--object-format=${fmt.name}'], d);
+  files.forEach((p, c) => writeFile(d, p, c));
+  cli(['add', '-A'], d);
+  cli(['commit', '-q', '-m', 'base'], d);
+  return d;
+}
+
+/// `git <args>` with [input] on stdin; returns stdout bytes.
+Future<Uint8List> cliBytes(List<String> args, String dir,
+    {List<int> input = const []}) async {
+  final p = await Process.start('git', args,
+      workingDirectory: dir, environment: goldenEnv);
+  p.stdin.add(input);
+  await p.stdin.close();
+  final out = BytesBuilder(copy: false);
+  final err = p.stderr.transform(utf8.decoder).join();
+  await p.stdout.forEach(out.add);
+  if (await p.exitCode != 0) fail('git ${args.join(' ')}: ${await err}');
+  return out.takeBytes();
+}

@@ -3,11 +3,15 @@ import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
 
+/// How a [TestAgent] misbehaves.
+enum AgentFault { none, refuseList, refuseSign, hangUp }
+
 /// A minimal ssh-agent on a Unix socket backed by in-memory keys.
 class TestAgent {
   TestAgent._(this._server, this.path, this._clients);
 
-  static Future<TestAgent> start(String path, List<SSHKeyPair> keys) async {
+  static Future<TestAgent> start(String path, List<SSHKeyPair> keys,
+      {AgentFault fault = AgentFault.none}) async {
     final server = await ServerSocket.bind(
         InternetAddress(path, type: InternetAddressType.unix), 0);
     final agent = SSHKeyPairAgent(keys);
@@ -22,7 +26,18 @@ class TestAgent {
           if (buf.length < 4 + len) break;
           final req = Uint8List.fromList(buf.sublist(4, 4 + len));
           buf = buf.sublist(4 + len);
-          final resp = await agent.handleRequest(req);
+          if (fault == AgentFault.hangUp) {
+            sock.destroy();
+            return;
+          }
+          final refused = switch (req[0]) {
+            11 => fault == AgentFault.refuseList,
+            13 => fault == AgentFault.refuseSign,
+            _ => false,
+          };
+          final resp = refused
+              ? Uint8List.fromList([5])
+              : await agent.handleRequest(req);
           final n = resp.length;
           sock.add([
             (n >> 24) & 255,

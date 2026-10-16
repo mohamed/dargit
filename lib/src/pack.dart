@@ -277,8 +277,11 @@ class _PackEntry {
 ///
 /// Packs with fewer than [unpackLimit] objects are exploded into loose
 /// objects (like Git's `transfer.unpackLimit`); larger ones are written as a
-/// `.pack` plus a version 2 `.idx`. Returns the number of objects.
-int storePack(ObjectDatabase db, Uint8List pack, {int unpackLimit = 100}) {
+/// `.pack` plus a version 2 `.idx` whose offsets above [off32Limit] go to
+/// the 64-bit table (git's `--index-version=2,<off32Limit>`). Returns the
+/// number of objects.
+int storePack(ObjectDatabase db, Uint8List pack,
+    {int unpackLimit = 100, int off32Limit = 0x7fffffff}) {
   if (pack.length < 12 + db.format.size ||
       pack[0] != 0x50 ||
       pack[1] != 0x41 ||
@@ -355,15 +358,13 @@ int storePack(ObjectDatabase db, Uint8List pack, {int unpackLimit = 100}) {
       chain.add(cur);
       _PackEntry? next;
       if (cur.type == _typeOfsDelta) {
-        next = byOffset[cur.baseOffset];
-        if (next == null) throw GitError('delta base missing in pack');
+        next = byOffset[cur.baseOffset]!;
       } else {
         next = byId[cur.baseId];
         if (next == null) {
-          final o = db.tryRead(cur.baseId!);
-          if (o == null) throw GitError('delta base ${cur.baseId} not found');
+          // Thin pack: the base is a local object ([canResolve] checked).
           thin = true;
-          base = o;
+          base = db.read(cur.baseId!);
           break;
         }
       }
@@ -386,7 +387,9 @@ int storePack(ObjectDatabase db, Uint8List pack, {int unpackLimit = 100}) {
     var cur = e;
     while (cur.type > 4) {
       if (cur.type == _typeOfsDelta) {
-        cur = byOffset[cur.baseOffset]!;
+        final next = byOffset[cur.baseOffset];
+        if (next == null) throw GitError('delta base missing in pack');
+        cur = next;
       } else {
         final next = byId[cur.baseId];
         if (next == null) return db.has(cur.baseId!);
@@ -441,7 +444,7 @@ int storePack(ObjectDatabase db, Uint8List pack, {int unpackLimit = 100}) {
   }
   final large = <int>[];
   for (final e in sorted) {
-    if (e.offset >= 0x80000000) {
+    if (e.offset > off32Limit) {
       writeUint32(idx, 0x80000000 | large.length);
       large.add(e.offset);
     } else {

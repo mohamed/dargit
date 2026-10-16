@@ -28,32 +28,40 @@ class GitConfig {
     var name = m.group(1)!;
     String? sub =
         m.group(2)?.replaceAllMapped(RegExp(r'\\(.)'), (x) => x.group(1)!);
-    // Legacy `[section.sub]` syntax.
+    // Legacy `[section.sub]` syntax: git lower-cases the subsection.
     if (sub == null && name.contains('.')) {
       final dot = name.indexOf('.');
-      sub = name.substring(dot + 1);
+      sub = name.substring(dot + 1).toLowerCase();
       name = name.substring(0, dot);
     }
     return _sectionKey(name, sub);
   }
 
+  /// A value as git reads it: quotes removed, escapes decoded, whitespace
+  /// outside quotes trimmed at the ends (and kept as spaces inside).
   static String _parseValue(String raw) {
     final sb = StringBuffer();
     var quoted = false;
+    var spaces = 0;
     for (var i = 0; i < raw.length; i++) {
       final c = raw[i];
+      if (!quoted && (c == ' ' || c == '\t')) {
+        spaces++;
+        continue;
+      }
+      if (!quoted && (c == '#' || c == ';')) break;
+      if (sb.isNotEmpty) sb.write(' ' * spaces);
+      spaces = 0;
       if (c == '"') {
         quoted = !quoted;
-      } else if (c == '\\' && i + 1 < raw.length) {
+      } else if (c == r'\' && i + 1 < raw.length) {
         final n = raw[++i];
-        sb.write(switch (n) { 'n' => '\n', 't' => '\t', _ => n });
-      } else if (!quoted && (c == '#' || c == ';')) {
-        break;
+        sb.write(switch (n) { 'n' => '\n', 't' => '\t', 'b' => '\b', _ => n });
       } else {
         sb.write(c);
       }
     }
-    return sb.toString().trim();
+    return sb.toString();
   }
 
   /// All values of `section.sub.key`, in file order.

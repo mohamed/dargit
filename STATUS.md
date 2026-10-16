@@ -12,6 +12,9 @@
   policy (sync, conflict resolution, TOFU host keys, `.gitmarker/`) moved
   to GitMarker; reflogs written; BSD-3-Clause licence.
 - [x] 8. SHA-256 repositories (`extensions.objectFormat`), next to SHA-1.
+- [x] 9. Tests use the git CLI as the golden reference; line coverage
+  98.9% (`dart run coverage:test_with_coverage -- --run-skipped -x network`,
+  with sshd installed).
 
 ## Layout
 
@@ -75,17 +78,46 @@
   receives `host` or `[host]:port` and OpenSSH's `SHA256:<base64>`.
 - Network timeout is an idle timeout on each connect/read.
 - No CRLF conversion, hooks, or macOS Unicode normalisation of file names.
+- `rev-parse` takes ids, abbreviations and ref names only (no `~`, `^`,
+  `@{}`); push takes branches only (`<src>[:<dst>]`).
+- Gitlinks (submodule entries) are kept, checked out as empty
+  directories, and staged as the submodule's HEAD; submodules are not
+  cloned or updated.
+- `lsRemote(url)` (`git ls-remote`): lets an app tell an empty remote
+  from a missing branch before `clone`.
 
 ## Testing
 
-- `dart test`: unit tests, every remote scenario via a path, `file://` and
-  the real `git upload-pack`/`receive-pack`, smart HTTP via
-  `git http-backend`, interop checks with the git CLI.
+Golden tests: each scenario runs through the `git` CLI and through
+dartgit with the same identity and clock (`Git(clock:)`,
+`GIT_AUTHOR_DATE`), so both must produce the same object ids. The
+comparison uses git's own view of both repositories (`test/golden.dart`:
+HEAD, refs, `ls-files -s`, `status --porcelain`, log, reflog,
+`fsck --strict`). Every test runs for SHA-1 and SHA-256.
+
+- `local_test`, `edge_cases_test`: working tree, index, commits, reset,
+  history, ignore rules, linked worktrees, gitlinks, locks, odd repos.
+- `remote_test`, `http_test`, `ssh_test`: clone/fetch/push/rebase/ls-remote
+  next to the same git command, via a path, `file://`, git's own
+  `upload-pack`/`receive-pack`, `git http-backend` and a throwaway sshd.
+- `protocol_test`: the smart protocol against `git upload-pack` /
+  `receive-pack --stateless-rpc` with narrowed capabilities (no symref,
+  side-band without 64k, no delete-refs) and scripted bad servers.
+- `storage_test`: packs written by git (ofs/ref deltas, 64-bit offsets,
+  thin packs), `.idx` byte-identical to `git index-pack`, packed refs,
+  config values in both directions.
+- `merge_test`: the line merge against `git merge-file` (1000 random cases).
 - `-t network`: public HTTPS clone. `-t ssh`: throwaway OpenSSH sshd with
-  generated keys (ed25519 + passphrase, RSA PEM without `.pub`, agent,
-  host-key verifier, rebase + push); runs in CI.
-- GitMarker's own Git and controller tests (97 non-widget tests) pass on
-  this API.
+  generated keys and test agents; runs in CI.
+
+Differences the golden tests found and fixed: status order (tracked first,
+then untracked), symlinks always rehashed (no lstat in Dart), uppercase hex
+in rev-parse, `log --follow` across re-created files, HTTP redirects, the
+merge conflict rule (touching hunks conflict, like xdiff), clone/fetch
+reflog and config, `clone -b` of an empty remote fails like git, linked
+worktrees (`commondir`), gitlinks in status/add, deleting symlinks during
+checkout, wildmatch bracket expressions, deleting packed refs in SHA-256
+repositories, quoted whitespace and legacy `[section.sub]` in config.
 
 ## Known limitations / ideas
 

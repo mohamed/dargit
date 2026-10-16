@@ -115,7 +115,7 @@ class RefStore {
           if (!skipPeeled) out.writeln(line);
           continue;
         }
-        skipPeeled = line.length > 41 && line.substring(41) == name;
+        skipPeeled = line.substring(line.indexOf(' ') + 1) == name;
         if (!skipPeeled) out.writeln(line);
       }
       writeFileAtomic(_packedFile.path, utf8Bytes(out.toString()));

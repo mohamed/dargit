@@ -317,16 +317,55 @@ void main() {
         await g.clone(sshUrl('$root/r.git'), dir);
         expect(await g.isRepository(dir), isTrue);
       }
-      final empty = '${Directory.systemTemp.createTempSync('dga').path}/agent';
-      final agent = await TestAgent.start(empty, []);
-      addTearDown(agent.close);
+      final rsa =
+          SSHKeyPair.fromPem(File('$keys/id_rsa').readAsStringSync(), null);
+      for (final (keys, fault, message) in [
+        (<SSHKeyPair>[], AgentFault.none, 'no keys'),
+        (rsa, AgentFault.refuseList, 'refused to list keys'),
+        (rsa, AgentFault.refuseSign, 'authentication failed'),
+        (rsa, AgentFault.hangUp, 'SSH agent closed'),
+      ]) {
+        final sock = '${Directory.systemTemp.createTempSync('dga').path}/agent';
+        final agent = await TestAgent.start(sock, keys, fault: fault);
+        addTearDown(agent.close);
+        await expectLater(
+            goldenGit(
+                    credentials: SshAgent(socketPath: sock),
+                    verifyHostKey: pinTo(known))
+                .lsRemote(sshUrl('$root/r.git')),
+            throwsA(isA<GitException>()
+                .having((e) => e.message, 'message', contains(message))),
+            reason: '$fault');
+      }
+    });
+
+    test('the local user name is used when the URL has none, like ssh',
+        () async {
+      final root = tempDir('nouser');
+      cli(['init', '-q', '--bare', 'r.git'], root);
+      final url = 'ssh://127.0.0.1:${port()}$root/r.git';
+      final env = Platform.environment;
+      final local = env['USER'] ?? env['USERNAME'] ?? 'git';
+      if (local == _user) {
+        expect(await keyGit('id_rsa').lsRemote(url), isEmpty);
+      } else {
+        await expectLater(
+            keyGit('id_rsa').lsRemote(url),
+            throwsA(isA<GitException>().having((e) => e.message, 'message',
+                contains('failed for $local@127.0.0.1'))));
+      }
+    });
+
+    test('a server that does not speak SSH', () async {
+      final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(s.close);
+      s.listen((c) {
+        c.write('HTTP/1.0 400 Bad Request\r\n\r\n');
+        c.close();
+      });
       await expectLater(
-          goldenGit(
-                  credentials: SshAgent(socketPath: empty),
-                  verifyHostKey: pinTo(known))
-              .lsRemote(sshUrl('$root/r.git')),
-          throwsA(isA<GitException>()
-              .having((e) => e.message, 'message', contains('no keys'))));
+          keyGit('id_rsa').lsRemote('ssh://$_user@127.0.0.1:${s.port}/x.git'),
+          throwsA(isA<GitException>()));
     });
   });
 }
