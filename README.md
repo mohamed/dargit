@@ -136,7 +136,10 @@ Golden tests need the `git` CLI and are skipped when it is not installed.
 suite (with sshd for the SSH tests), `test/environment_test.dart` as the
 unprivileged user `nobody` (unreadable files; needs root and `runuser`)
 and again with no `chmod` on `PATH`. Coverage is 100% of `lib/` lines
-when all three run.
+when all three run. CI does not run it on pushes or pull requests; the
+**Coverage** workflow (`.github/workflows/coverage.yml`) runs it on demand
+(Actions → Coverage → Run workflow, with an optional minimum percentage),
+shows the per-file summary on the run page and uploads `lcov.info`.
 
 ## Dependencies and licences
 
